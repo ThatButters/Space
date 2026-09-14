@@ -124,13 +124,18 @@ void Tour::skip(int delta) {
     // m_next already points one past the current stop; step relative to that.
     if (m_phase == Phase::Intro) m_next = delta > 0 ? 0 : n - 1;
     else m_next = (m_next + n + (size_t)((delta > 0 ? 0 : -2) + n)) % n;
-    if (m_phase == Phase::FadeOut) return;
+    if (m_phase == Phase::FadeOut) { // already dark: just re-pick
+        m_stopChosen = false;
+        m_clockJump = false;
+        return;
+    }
     beginCut();
 }
 
 void Tour::beginCut() {
     m_phase = Phase::FadeOut;
     m_t = 0.0;
+    m_stopChosen = false;
 }
 
 void Tour::beginApproach(const SolarSystem& solar) {
@@ -155,6 +160,7 @@ void Tour::beginApproach(const SolarSystem& solar) {
                 m_clockJumpJd = lit;
             }
         }
+        if (m_clockJump) return; // the app moves the clock next frame; the approach is laid out after that
     } else {
         // Arrive at the sunlit face, on the side nearest the Sun-ward hemisphere.
         const Body& tb = solar.body(m_target);
@@ -169,7 +175,10 @@ void Tour::beginApproach(const SolarSystem& solar) {
             }
         }
     }
+    layOutApproach(solar);
+}
 
+void Tour::layOutApproach(const SolarSystem& solar) {
     // The approach is a straight line, in the target's frame, that ends at the visit pose and starts
     // farther back along the same line of sight, so the target sits centred and grows the whole way.
     glm::dvec3 pos, up;
@@ -213,7 +222,14 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
 
     if (m_phase == Phase::FadeOut) {
         m_t += dt; // hold still while the picture goes dark
-        if (m_t >= fadeOutSeconds) beginApproach(solar);
+        if (m_t >= fadeOutSeconds) {
+            if (!m_stopChosen) {
+                m_stopChosen = true;
+                beginApproach(solar); // may ask the app to move the clock (a TLE craft's next daylit pass)
+            } else if (!m_clockJump) {
+                layOutApproach(solar); // the scene now sits at the new time: aim at where the craft really is
+            }
+        }
         return;
     }
 

@@ -62,6 +62,7 @@ private:
     enum class Phase { Intro, FadeOut, Approach, Visit };
     void beginCut();
     void beginApproach(const SolarSystem& solar);
+    void layOutApproach(const SolarSystem& solar);
     glm::dvec3 orbitOffset(const SolarSystem& solar, int body, double angle) const;
     glm::dvec3 targetPosition(const SolarSystem& solar) const;
     // Where the visit begins (position, orientation) and the leg's locked up vector.
@@ -81,6 +82,7 @@ private:
     glm::dvec3 m_approachFrom{0.0}, m_approachTo{0.0};
     glm::quat m_legOrient{1.f, 0.f, 0.f, 0.f};
     glm::dvec3 m_legUp{0.0, 1.0, 0.0};
+    bool m_stopChosen = false; // FadeOut: the next stop is picked (and any clock jump requested)
     bool m_clockJump = false;
     double m_clockJumpJd = 0.0;
 };
