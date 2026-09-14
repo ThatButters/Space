@@ -81,6 +81,11 @@ public:
                    glm::quat& outOrient) const;
     // How far to hold the camera, in sizes: big stations are framed close so they fill the view.
     double viewDistanceSizes(int index) const;
+    // Where the camera looks while visiting: the craft, or for a lander on the Moon a point above it so
+    // Earth hangs in the sky over the lander (fovY: the camera's vertical field of view, radians).
+    glm::dvec3 viewAim(const SolarSystem& solar, int index, const glm::dvec3& cameraPos, float fovY) const;
+    // A lander on the Moon: framed low, from the side away from Earth, so Earth is in the shot.
+    bool earthInSky(const SolarSystem& solar, int index) const;
     // Orbital frame of an orbiter: along-track (velocity), radial up, from the current placement.
     void orbitFrame(const SolarSystem& solar, int index, glm::dvec3& alongTrack, glm::dvec3& up) const;
     // "Up" for a camera near this craft: away from the parent for landers and orbiters, model up otherwise.

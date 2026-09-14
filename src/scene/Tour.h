@@ -83,6 +83,7 @@ private:
     glm::quat m_legOrient{1.f, 0.f, 0.f, 0.f};
     glm::dvec3 m_legUp{0.0, 1.0, 0.0};
     bool m_stopChosen = false; // FadeOut: the next stop is picked (and any clock jump requested)
+    float m_defaultFov = 0.f, m_fovWanted = 0.f;  // the camera's own lens; lunar landing sites get a wider one (Earth in the sky)
     bool m_clockJump = false;
     double m_clockJumpJd = 0.0;
 };

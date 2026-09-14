@@ -441,6 +441,19 @@ void CraftCatalog::viewpoint(const SolarSystem& solar, int index, double distanc
     if (glm::length(sunFlat) < 1e-6) sunFlat = side;
     sunFlat = glm::normalize(sunFlat);
     glm::dvec3 dir;
+    if (earthInSky(solar, index)) {
+        // Standing on the Moon: the one thing that says where we are is Earth in the black sky. Camera
+        // low, on the side of the lander away from Earth, so the tour looks past the lander up at it.
+        const glm::dvec3 toEarth = glm::normalize(solar.body(solar.find("Earth")).position - c.position);
+        glm::dvec3 earthFlat = toEarth - up * glm::dot(toEarth, up);
+        earthFlat = glm::length(earthFlat) > 1e-6 ? glm::normalize(earthFlat) : sunFlat;
+        dir = glm::normalize(-earthFlat * 0.92 + up * 0.14 + side * 0.15);
+        // The lander sits a little left of centre, clear of the caption under it.
+        outPos = c.position + dir * (size * distanceSizes * 1.25);
+        const glm::dvec3 aim = viewAim(solar, index, outPos, glm::radians(85.f));
+        outOrient = glm::quatLookAt(glm::normalize(glm::vec3(aim - outPos)), glm::vec3(up));
+        return;
+    }
     switch (c.placement) {
     case CraftPlacement::Surface:
         if (c.altitudeKm > 1.0) {
@@ -472,6 +485,31 @@ void CraftCatalog::viewpoint(const SolarSystem& solar, int index, double distanc
     }
     outPos = c.position + dir * (size * distanceSizes);
     outOrient = glm::quatLookAt(glm::normalize(glm::vec3(c.position - outPos)), glm::vec3(up));
+}
+
+bool CraftCatalog::earthInSky(const SolarSystem& solar, int index) const {
+    const Craft& c = m_crafts[index];
+    if (c.placement != CraftPlacement::Surface || c.parent < 0 || c.altitudeKm > 1.0) return false;
+    if (solar.body(c.parent).name != "Moon") return false;
+    const int earth = solar.find("Earth");
+    if (earth < 0) return false;
+    const glm::dvec3 toEarth = glm::normalize(solar.body(earth).position - c.position);
+    return glm::dot(toEarth, skyUp(solar, index)) > 0.15; // above the horizon by a useful margin
+}
+
+glm::dvec3 CraftCatalog::viewAim(const SolarSystem& solar, int index, const glm::dvec3& cameraPos, float fovY) const {
+    const Craft& c = m_crafts[index];
+    if (!earthInSky(solar, index)) return c.position;
+    const glm::dvec3 up = skyUp(solar, index);
+    const glm::dvec3 toEarth = glm::normalize(solar.body(solar.find("Earth")).position - c.position);
+    const double earthElev = std::asin(std::clamp(glm::dot(toEarth, up), -1.0, 1.0));
+    const double half = fovY * 0.5;
+    // Tilt up just enough to bring Earth inside the top of the frame, keeping the lander in the bottom.
+    const double lookElev = std::clamp(earthElev - half + glm::radians(3.0), 0.0, half - glm::radians(5.0));
+    // The aim point sits above the lander at the height that gives that elevation from where the camera is.
+    const glm::dvec3 rel = c.position - cameraPos;
+    const double flat = glm::length(rel - up * glm::dot(rel, up));
+    return cameraPos + (rel - up * glm::dot(rel, up)) + up * (flat * std::tan(lookElev));
 }
 
 double CraftCatalog::viewDistanceSizes(int index) const {

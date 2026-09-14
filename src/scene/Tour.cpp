@@ -189,9 +189,18 @@ void Tour::layOutApproach(const SolarSystem& solar) {
     const glm::dvec3 lineOfSight = glm::normalize(glm::dvec3(glm::vec3(orient * glm::vec3(0.f, 0.f, -1.f))));
     const double dist = glm::length(m_approachTo);
     m_approachFrom = m_approachTo - lineOfSight * (dist * (m_targetCraft >= 0 ? 4.0 : 1.6));
+    if (m_targetCraft >= 0 && m_crafts && m_crafts->crafts()[m_targetCraft].placement == CraftPlacement::Surface &&
+        m_crafts->crafts()[m_targetCraft].altitudeKm <= 1.0) {
+        // On the ground the line of sight may point up (Earth over a lander): backing out along it would
+        // start the approach underground. Back out level with the ground instead and come in from above.
+        glm::dvec3 flat = lineOfSight - up * glm::dot(lineOfSight, up);
+        flat = glm::length(flat) > 1e-9 ? glm::normalize(flat) : lineOfSight;
+        m_approachFrom = m_approachTo - flat * (dist * 3.5) + up * (dist * 1.2);
+    }
     m_legOrient = orient;
     m_legUp = up;
     m_phase = Phase::Approach;
+    m_fovWanted = m_targetCraft >= 0 && m_crafts && m_crafts->earthInSky(solar, m_targetCraft) ? glm::radians(85.f) : 0.f;
     m_t = 0.0;
     LOG_INFO("Tour: cut to {}", m_targetCraft >= 0 && m_crafts ? m_crafts->crafts()[m_targetCraft].name
                                                                  : solar.body(m_target).name + (m_mode == 1 ? "'s rings" : ""));
@@ -220,6 +229,9 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
         return;
     }
 
+    if (m_defaultFov <= 0.f) m_defaultFov = camera.fovY;
+    // The lens changes only in the black of a cut: wide at a lunar site so Earth fits above the lander.
+    if (m_phase == Phase::Approach && m_t == 0.0) camera.fovY = m_fovWanted > 0.f ? m_fovWanted : m_defaultFov;
     if (m_phase == Phase::FadeOut) {
         m_t += dt; // hold still while the picture goes dark
         if (m_t >= fadeOutSeconds) {
@@ -257,7 +269,8 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
         glm::dvec3 vpPos;
         glm::quat vpOrient;
         m_crafts->viewpoint(solar, m_targetCraft, m_crafts->viewDistanceSizes(m_targetCraft), vpPos, vpOrient);
-        const double ang = smooth(m_t / visitSeconds) * 0.6; // about a third of a turn over the visit
+        // About a third of a turn over the visit; barely any at a lunar site, so Earth stays in the frame.
+        const double ang = smooth(m_t / visitSeconds) * (m_crafts->earthInSky(solar, m_targetCraft) ? 0.12 : 0.6);
         const glm::dvec3 off = vpPos - craft.position;
         camera.position = craft.position + glm::dvec3(glm::angleAxis((float)ang, glm::vec3(m_legUp)) * glm::vec3(off));
         camera.speed = craft.sizeMeters / (kKmPerParsec * 1000.0) * 0.3;
@@ -272,7 +285,18 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
     glm::quat want;
     visitPose(solar, pos, want, up);
     (void)pos;
-    if (m_mode != 1) want = glm::quatLookAt(glm::normalize(glm::vec3(targetPos - camera.position)), glm::vec3(m_legUp));
+    if (m_mode != 1) {
+        glm::dvec3 aim = targetPos;
+        if (m_targetCraft >= 0 && m_crafts)
+            aim = m_crafts->viewAim(solar, m_targetCraft, camera.position, camera.fovY);
+        if (m_targetCraft >= 0 && m_crafts && m_crafts->earthInSky(solar, m_targetCraft)) {
+            // Frame the lander left of centre so the caption does not sit on it.
+            const glm::dvec3 fwd = glm::normalize(aim - camera.position);
+            const glm::dvec3 right = glm::normalize(glm::cross(fwd, m_legUp));
+            aim += right * (glm::length(aim - camera.position) * 0.22);
+        }
+        want = glm::quatLookAt(glm::normalize(glm::vec3(aim - camera.position)), glm::vec3(m_legUp));
+    }
     // At most a few degrees per second of turning.
     const float maxStep = (float)(glm::radians(6.0) * dt);
     const float ang = glm::angle(glm::inverse(camera.orientation) * want);
