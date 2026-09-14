@@ -159,7 +159,9 @@ SolarSystem::SolarSystem() {
     };
     tex("Sun", "8k_sun.jpg");
     tex("Mercury", "8k_mercury.jpg");
-    tex("Venus", "4k_venus_atmosphere.jpg");
+    // Venus: the cloud deck is the day map until the Magellan surface is baked; then it becomes the opaque
+    // cloud layer over the radar map (only seen from beneath the clouds).
+    tex("Venus", "4k_venus_atmosphere.jpg", "", "4k_venus_atmosphere.jpg");
     tex("Earth", "8k_earth_daymap.jpg", "8k_earth_nightmap.jpg", "8k_earth_clouds.jpg");
     tex("Moon", "8k_moon.jpg");
     tex("Mars", "8k_mars.jpg");
@@ -210,6 +212,7 @@ SolarSystem::SolarSystem() {
     };
     hires("Mars", "mars", true);
     hires("Mercury", "mercury", true);
+    hires("Venus", "venus", false); // Magellan radar surface under the clouds
     for (const char* moonName : {"Io", "Europa", "Ganymede", "Callisto", "Rhea", "Triton", "Phobos", "Deimos"}) {
         std::string key = moonName;
         for (auto& ch : key) ch = (char)std::tolower((unsigned char)ch);

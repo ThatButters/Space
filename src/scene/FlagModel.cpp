@@ -162,6 +162,22 @@ gfx::ModelData makeExhaustPlumeModel() {
     return m;
 }
 
+gfx::ModelData makeExhaustTrailModel() {
+    // Same proxy shape as the flame, four kilometres long; the shader's trail branch fills it (plume.frag).
+    gfx::ModelData m = makeExhaustPlumeModel();
+    for (auto& v : m.vertices) {
+        const float t = -v.position.y / 212.f;                       // 0 at the engine plane, 1 at the end
+        const float r = (40.f + 700.f * t) / (9.f + 91.f * t);        // new radius over the flame cone's
+        v.position = glm::vec3(v.position.x * r, -4000.f * t, v.position.z * r);
+    }
+    m.boundsMin = m.boundsMax = m.vertices[0].position;
+    for (const auto& v : m.vertices) {
+        m.boundsMin = glm::min(m.boundsMin, v.position);
+        m.boundsMax = glm::max(m.boundsMax, v.position);
+    }
+    return m;
+}
+
 gfx::ModelData makeApolloFlagModel() {
     gfx::ModelData m;
     const float mastTop = 2.18f;              // visible mast height above the regolith

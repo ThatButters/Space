@@ -20,5 +20,12 @@ void main() {
     // A faint wider halo gives bright stars a soft glow before real bloom lands.
     float halo = exp(-sqrt(r2) * 3.0) * 0.015;
 
-    outColor = vec4(vColor * (gaussian * norm + halo * norm), 1.0);
+    // Diffraction: the brightest stars grow faint four-point spikes (a lens aperture's signature); the
+    // energy comes out of the core so the total stays put. Dim stars get none.
+    float bright = smoothstep(4.0, 9.0, vRadius);
+    float spikes = (exp(-abs(vUV.y) * 28.0) * exp(-abs(vUV.x) * 3.5) +
+                    exp(-abs(vUV.x) * 28.0) * exp(-abs(vUV.y) * 3.5)) * 0.03 * bright;
+    gaussian *= 1.0 - 0.05 * bright;
+
+    outColor = vec4(vColor * (gaussian * norm + (halo + spikes) * norm), 1.0);
 }

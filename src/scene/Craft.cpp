@@ -101,7 +101,7 @@ void CraftCatalog::build(const SolarSystem& solar) {
     };
 
     // --- Landing sites (selenographic / areographic coordinates) ---
-    surface("Apollo 11 (Tranquility Base)", "apollo_lm.glb", 9.4f, "Moon", 0.674, 23.473, 0, "Eagle descent stage, July 1969");
+    surface("Apollo 11 (Tranquility Base)", "apollo_lm.glb", 9.4f, "Moon", 0.674, 23.473, 0, "Eagle's descent stage, where the first footprints are");
     m_crafts.back().when = "20 July 1969";
     surface("Apollo 12", "apollo_lm.glb", 9.4f, "Moon", -3.012, -23.422, 40, "Intrepid, Ocean of Storms, 1969");
     m_crafts.back().when = "19 November 1969";
@@ -138,6 +138,12 @@ void CraftCatalog::build(const SolarSystem& solar) {
         plume.noLift = true;
         plume.blurb = "";
         m_crafts.push_back(plume);
+        // The exhaust column it leaves behind: kilometres of sunlit steam and soot trailing downrange.
+        Craft trail = plume;
+        trail.name = "Saturn V trail";
+        trail.model = "__trail__";
+        trail.exhaustTrail = true;
+        m_crafts.push_back(trail);
     }
     // Higher-quality NASA sources (scripts/fetch_models.py), falling back to the original GLBs.
     auto upgrade = [&](const char* name, const char* model, float size, float yaw, float pitch) {
@@ -410,7 +416,7 @@ void CraftCatalog::buildGpuList(const SolarSystem& solar, const glm::dvec3& came
             }
         }
         g.sunDir.w *= sunlit;
-        g.crop = glm::vec4(c.cropAboveY, 0.f, 0.f, 0.f);
+        g.crop = glm::vec4(c.cropAboveY, c.exhaustTrail ? 1.f : 0.f, 0.f, 0.f);
         g.extra = glm::vec4((float)(c.sizeMeters / kMetersPerParsec), sunlit, c.sizeMeters / native,
                             c.listed && c.placement != CraftPlacement::Surface ? 1.f : 0.f);
         g.tint = glm::vec4(1.f, 1.f, 1.f, ground);

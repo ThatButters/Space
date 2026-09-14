@@ -30,6 +30,7 @@ struct Craft {
     float cropAboveY = 1e9f;   // model-space Y above which the mesh is not drawn (stages that left)
     bool noLift = false;       // generated scenery already placed relative to the ground
     glm::vec3 modelOffset{0.f}; // shift in the model's own (pitched) frame, model units
+    bool exhaustTrail = false; // ray-marched as the sunlit smoke column behind a rocket, not the flame
     // Live two-line elements (CelesTrak): circular-orbit propagation with J2 node regression.
     bool tle = false;
     double tleEpochJd = 0.0, tleIncDeg = 0.0, tleRaanDeg = 0.0, tleArgLatDeg = 0.0, tleMeanMotion = 15.5;

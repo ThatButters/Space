@@ -58,6 +58,13 @@ BODIES = {
         "dem": dict(url=MOSAIC + "Mercury_Messenger_USGS_DEM_Global_665m_v2.tif", labels=["Mercury_Messenger_USGS_DEM_Global_665m_v2_pds3.lbl", "Mercury_Messenger_USGS_DEM_Global_665m_v2.lbl"],
                     width=23040, height=11520, dtype="<i2", scale_m=0.5, offset_m=0.0, left_lon=0.0, down=1, radius_km=2439.4),
     },
+    "venus": {
+        # Magellan C3-MDIR synthetic-aperture radar global mosaic, 2025 m (52.15 px/deg), greyscale (radar
+        # backscatter: rough = bright). PositiveEast, clon 0, -180..180. The surface under the clouds, tinted to
+        # the orange of the Venera 13 panoramas (the sky there is that colour, so the ground appears so too).
+        "color": dict(url=MOSAIC + "Venus_Magellan_C3-MDIR_Global_Mosaic_2025m.tif", labels=["Venus_Magellan_C3-MDIR_Global_Mosaic_2025m_pds3.lbl", "Venus_Magellan_C3-MDIR_Global_Mosaic_2025m.lbl"],
+                      left_lon=-180.0, mirror=False, max_w=16384, tint=(0.78, 0.55, 0.32)),
+    },
     "io": {
         # Galileo SSI / Voyager colour merge, 1 km (31.79 px/deg). Label PositiveWest, clon 0, -180..180; ISIS keeps
         # sample numbers increasing eastward, so the image is already east-right with 180 at the left edge.
@@ -337,8 +344,12 @@ def prepare_color(body, out):
     if im.size != (tw, th):
         im = im.resize((tw, th), Image.LANCZOS)
     a = np.asarray(im)
-    if a.ndim == 2:  # greyscale: replicate to RGB, natural brightness
-        a = np.repeat(a[:, :, None], 3, axis=2)
+    if a.ndim == 2:  # greyscale: replicate to RGB, natural brightness (or a flat tint in linear light)
+        if spec.get("tint"):
+            lin = _LIN[a][:, :, None] * np.asarray(spec["tint"], dtype=np.float32)[None, None, :]
+            a = (np.clip(lin, 0.0, 1.0) ** (1.0 / 2.2) * 255.0 + 0.5).astype(np.uint8)
+        else:
+            a = np.repeat(a[:, :, None], 3, axis=2)
     if spec["mirror"]:
         a = a[:, ::-1]
     a = np.ascontiguousarray(roll_to_center(a, spec["left_lon"]))

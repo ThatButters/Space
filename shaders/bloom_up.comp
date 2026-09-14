@@ -29,6 +29,9 @@ void main() {
              + texture(uSrc, uv + texel * vec2( 1,  1)).rgb * 1.0;
     vec3 blurred = sum / 16.0;
 
+    // Each coarser level is folded in at a fixed fraction, so the chain converges to a tight core with a
+    // long faint tail instead of every mip piling up into one broad halo.
+    const float kTail = 0.62;
     vec3 existing = imageLoad(uDst, gid).rgb;
-    imageStore(uDst, gid, vec4(existing + blurred, 1.0));
+    imageStore(uDst, gid, vec4(existing + blurred * kTail, 1.0));
 }

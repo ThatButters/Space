@@ -51,7 +51,7 @@ void main() {
         // Soft knee threshold: keep only the energy above the knee so dim nebulae stay crisp.
         float luma = dot(result, vec3(0.2126, 0.7152, 0.0722));
         float knee = pc.params.z;
-        float w = luma <= 0.0 ? 0.0 : smoothstep(0.0, knee, luma) * max(luma - knee * 0.5, 0.0) / max(luma, 1e-4);
+        float w = luma <= 0.0 ? 0.0 : smoothstep(0.0, knee, luma) * max(luma - knee * 0.75, 0.0) / max(luma, 1e-4);
         result *= w;
     } else {
         result = e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;

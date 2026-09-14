@@ -110,16 +110,15 @@ def fill_nodata(a, valid):
         return a
     out = a.copy()
     rows = np.where(valid.any(axis=1))[0]
-    for r in range(a.shape[0]):
+    for r in rows:  # rows with data first, so an empty row copies a filled one
         row_valid = valid[r]
         if row_valid.all():
             continue
-        if not row_valid.any():
-            src = rows[np.argmin(np.abs(rows - r))]
-            out[r] = out[src]
-            continue
         idx = np.where(row_valid)[0]
         out[r] = np.interp(np.arange(a.shape[1]), idx, a[r, idx])
+    for r in range(a.shape[0]):
+        if not valid[r].any():
+            out[r] = out[rows[np.argmin(np.abs(rows - r))]]
     return out
 
 

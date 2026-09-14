@@ -303,8 +303,9 @@ void App::loadModels() {
     for (const auto& n : names)
         jobs.push_back(std::async(std::launch::async, [path = dir / n, name = n] {
             gfx::ModelData data;
-            if (name == "__flag__" || name == "__plume__") {
-                data = name == "__flag__" ? makeApolloFlagModel() : makeExhaustPlumeModel();
+            if (name == "__flag__" || name == "__plume__" || name == "__trail__") {
+                data = name == "__flag__" ? makeApolloFlagModel()
+                     : name == "__plume__" ? makeExhaustPlumeModel() : makeExhaustTrailModel();
                 return std::make_pair(true, std::move(data));
             }
             bool ok = gfx::loadGlb(path, data);
@@ -324,7 +325,7 @@ void App::loadModels() {
     }
     for (Craft& c : m_crafts.crafts()) {
         c.modelIndex = loaded[c.model];
-        if (c.name == "Saturn V plume") {
+        if (c.name == "Saturn V plume" || c.name == "Saturn V trail") {
             // Centre the flame on the rocket's axis, at its base (the rocket model is not centred on its origin).
             const int rocket = m_crafts.find("Saturn V");
             const int rm = rocket >= 0 ? loaded[m_crafts.crafts()[rocket].model] : -1;
@@ -336,7 +337,8 @@ void App::loadModels() {
             }
         }
         // Generated scenery is built in metres: keep it at its true size.
-        if ((c.model == "__flag__" || c.model == "__plume__") && c.modelIndex >= 0) c.sizeMeters = m_renderer.modelExtent(c.modelIndex);
+        if ((c.model == "__flag__" || c.model == "__plume__" || c.model == "__trail__") && c.modelIndex >= 0)
+            c.sizeMeters = m_renderer.modelExtent(c.modelIndex);
     }
     int ok = 0;
     for (const auto& kv : loaded) ok += kv.second >= 0;

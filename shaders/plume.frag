@@ -62,10 +62,42 @@ vec4 sampleFlame(vec3 p, float time) {
     return vec4(col, alpha);
 }
 
+// The exhaust column left behind (crop.y = 1): four kilometres of steam and soot streaming back along the
+// rocket's axis, thin and bright near the engines, widening and thinning downrange. Sunlit, not emissive.
+const float TRAIL_LEN = 4000.0;
+
+float trailRadiusAt(float d) { return 18.0 + d * 0.07 + 0.00002 * d * d; }
+
+vec4 sampleTrail(vec3 p, float time, vec3 sunM) {
+    float d = -p.y;
+    if (d < 0.0 || d > TRAIL_LEN) return vec4(0.0);
+    float rad = length(p.xz);
+    float R = trailRadiusAt(d);
+    float x = rad / R;
+    if (x > 1.3) return vec4(0.0);
+    // The column only drifts slowly against the rocket frame: billows roll, they do not race.
+    vec3 q = vec3(p.x, p.y + time * 40.0, p.z) / R;
+    float n = fbm(q * 1.6 + vec3(0.0, d * 0.0007, 0.0), 4);
+    float n2 = fbm(q * 4.5 + 3.0, 3);
+    float edge = smoothstep(1.25, 0.35, x + (n - 0.5) * 0.9);
+    // Densest just behind the flame, thinning as it spreads; the first 150 m is still flame territory.
+    float along = smoothstep(120.0, 260.0, d) * (1.0 - smoothstep(1800.0, TRAIL_LEN, d));
+    float dens = edge * along * (0.45 + 0.9 * n2) * (0.06 + 0.5 * (1.0 - smoothstep(0.0, 2200.0, d)));
+    // Lighting: sunlit on the Sun-facing flank, soot-grey in its own shadow, with a bit of sky/ground fill.
+    vec3 radial = rad > 1e-3 ? vec3(p.x, 0.0, p.z) / rad : vec3(0.0);
+    float sunSide = 0.5 + 0.5 * dot(radial, sunM);
+    float depthShade = mix(0.35, 1.0, sunSide) * mix(0.55, 1.0, 1.0 - x * 0.6);
+    vec3 albedo = mix(vec3(0.42, 0.40, 0.38), vec3(0.92, 0.91, 0.90), smoothstep(150.0, 900.0, d)); // sooty, then steam
+    vec3 col = albedo * (depthShade * 1.05 + 0.18);
+    return vec4(col, dens);
+}
+
 void main() {
     Craft c = crafts[pc.ids.x];
     float time = pc.uvTransform.x;
     float mpu = pc.shadowInfo.w; // metres per world unit
+    bool trail = c.crop.y > 0.5;
+    float len = trail ? TRAIL_LEN : LEN;
     // Camera and ray in model space (metres).
     // The model matrix is rotation * scale (scale ~1e-17: metres in parsecs) plus a translation; a float
     // inverse underflows, so undo it by hand: transpose the rotation, divide by the scale.
@@ -74,31 +106,41 @@ void main() {
     mat3 rT = transpose(rs / scale);
     vec3 camM = -(rT * c.model[3].xyz) / scale;
     vec3 dirM = normalize(rT * normalize(vWorldPos));
+    vec3 sunM = normalize(rT * normalize(c.sunDir.xyz));
     // March from the camera to well past the far side of the proxy.
     float tHit = length(vModelPos - camM);
-    float tFar = tHit + 2.0 * LEN + 80.0;
-    // Clip the march to the slab y in [-LEN, 0].
+    float tFar = tHit + 2.0 * len + 80.0;
+    // Clip the march to the slab y in [-len, 0].
     float t0 = tHit, t1 = tFar;
     if (abs(dirM.y) > 1e-5) {
-        float ta = (0.0 - camM.y) / dirM.y, tb = (-LEN - camM.y) / dirM.y;
+        float ta = (0.0 - camM.y) / dirM.y, tb = (-len - camM.y) / dirM.y;
         t0 = max(t0, min(ta, tb));
         t1 = min(t1, max(ta, tb));
     }
-    if (camM.y < 0.0 && camM.y > -LEN) t0 = max(tHit * 0.0, 0.0); // camera inside the slab
+    if (camM.y < 0.0 && camM.y > -len) t0 = max(tHit * 0.0, 0.0); // camera inside the slab
     if (t1 <= t0) discard;
     const int STEPS = 56;
     float dt = (t1 - t0) / float(STEPS);
     float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
     vec3 acc = vec3(0.0);
     float trans = 1.0;
+    float irr = c.sunDir.w;
     for (int i = 0; i < STEPS && trans > 0.01; ++i) {
         float t = t0 + (float(i) + jitter) * dt;
         vec3 p = camM + dirM * t;
-        vec4 s = sampleFlame(p, time);
-        if (s.a <= 0.0) continue;
-        float a = 1.0 - exp(-s.a * dt * 0.09);
-        acc += s.rgb * a * trans * 0.35;
-        trans *= 1.0 - a;
+        if (trail) {
+            vec4 s = sampleTrail(p, time, sunM);
+            if (s.a <= 0.0) continue;
+            float a = 1.0 - exp(-s.a * dt * 0.0005); // thin: at 60 km the exhaust is a faint, wide haze
+            acc += s.rgb * irr * a * trans;
+            trans *= 1.0 - a;
+        } else {
+            vec4 s = sampleFlame(p, time);
+            if (s.a <= 0.0) continue;
+            float a = 1.0 - exp(-s.a * dt * 0.09);
+            acc += s.rgb * a * trans * 0.35;
+            trans *= 1.0 - a;
+        }
     }
     if (trans > 0.999) discard;
     outColor = vec4(acc, trans);

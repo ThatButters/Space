@@ -319,6 +319,26 @@ float craftShadow(vec3 hitWorld, vec3 Nw) {
     return lit / 25.0;
 }
 
+// Cloud cover at a tangent-plane offset d (planet radii) from p: the map (drifting east at ~80 m/s),
+// today's satellite cover where it has data, and close-range cellular detail weighted by detailW.
+float cloudAt(Body b, vec3 p, vec2 uv, vec3 east, vec3 north, float cosLat, vec3 d, float time, float detailW) {
+    vec2 uvo = uv + vec2(dot(d, east) / max(cosLat, 0.05) / (2.0 * PI), -dot(d, north) / PI);
+    float c = b.tex.z >= 0 ? sampleMap(b.tex.z, uvo + vec2(time * 2e-6, 0.0)).r
+                           : smoothstep(0.55, 0.75, fbm((p + d) * 5.0 + vec3(time * 0.004, 0.0, 0.0) + b.params.y * 5.0, 5));
+    if (b.tiles.w >= 0) {
+        vec2 live = sampleMap(b.tiles.w, uvo).rg;
+        c = mix(c, live.r, live.g);
+    }
+    if (detailW > 0.0 && c > 0.01) {
+        vec3 pd = p + d + vec3(time * 2e-6 * 6.2831853, 0.0, 0.0);
+        float fine = fbm(pd * 1500.0, 4) * 0.6 + fbm(pd * 6000.0, 3) * 0.4;
+        // Mottle rather than shred: thin cloud stays thin, edges get structure.
+        float shaped = c * clamp(0.45 + 1.1 * fine, 0.0, 1.4) * smoothstep(0.02, 0.25, c + (fine - 0.5) * 0.3);
+        c = clamp(mix(c, shaped, detailW), 0.0, 1.0);
+    }
+    return c;
+}
+
 void main() {
     Body b = bodies[vBody];
     int type = int(b.params.x + 0.5);
@@ -357,7 +377,15 @@ void main() {
         bool sameSide = sign(dot(N, L)) == sign(dot(N, V));
         float faceLight = sameSide ? 1.0 : 0.38;
         vec3 lit = ring.rgb * (0.06 + 1.1 * ndl) * shadow * faceLight;
-        float alpha = clamp(density, 0.0, 1.0) * 0.95;
+        // Backlit: looking toward the Sun through the ring, the sparse parts (C ring, Cassini division)
+        // glow by forward scatter - the dust is brightest where it is thinnest.
+        if (!sameSide) {
+            float fwd = pow(clamp(dot(-L, V), 0.0, 1.0), 6.0);
+            float sparse = density * (1.0 - 0.75 * density);
+            lit += ring.rgb * shadow * fwd * sparse * 2.5;
+        }
+        // Coverage follows the optical depth, never fully opaque: the globe shows through the thin parts.
+        float alpha = pow(clamp(density, 0.0, 1.0), 1.25) * 0.92;
         outColor = vec4(lit * alpha, 1.0 - alpha); // premultiplied over
         return;
     }
@@ -565,18 +593,81 @@ void main() {
         // Below the cloud map's ~5 km pixels, break the edges up with fine cellular structure (only when the
         // camera is close enough for a map pixel to span several screen pixels).
         float cloudDetail = 1.0 - smoothstep(600.0, 2500.0, footprintM);
-        if (cloudDetail > 0.0 && clouds > 0.01) {
-            vec3 pd = p + vec3(time * 2e-6 * 6.2831853, 0.0, 0.0);
-            float fine = fbm(pd * 1500.0, 4) * 0.6 + fbm(pd * 6000.0, 3) * 0.4;
-            // Mottle rather than shred: thin cloud stays thin, edges get structure.
-            float shaped = clouds * clamp(0.45 + 1.1 * fine, 0.0, 1.4) * smoothstep(0.02, 0.25, clouds + (fine - 0.5) * 0.3);
-            clouds = clamp(mix(clouds, shaped, cloudDetail), 0.0, 1.0);
+        if (cloudDetail > 0.0 && clouds > 0.01)
+            clouds = cloudAt(b, p, uv, east, north, cosLat, vec3(0.0), time, cloudDetail);
+        // Volumetric tops (close range only): the deck is a height field, thick cloud towering up to
+        // ~2.5 km over thin. Its slope tilts the lighting, taller cloud up-sun casts shadow across it,
+        // the tops parallax against the ground with view angle, and thin edges catch a forward-scatter
+        // rim when the Sun is ahead. Six extra cover taps; blends back to the flat deck beyond ~30 km/px.
+        float cloudShade = 1.0, cloudRim = 0.0;
+        float volW = 1.0 - smoothstep(800.0, 4000.0, footprintM);
+        if (volW > 0.0 && clouds > 0.005) {
+            const float topKm = 2.5;                                // tallest tops above the deck base
+            float Rkm = b.posRadius.w * kKmPerParsecF;
+            float hScale = topKm / Rkm;                             // height per unit cover, planet radii
+            float stepR = 4.0 / Rkm;                                // gradient/shadow step: 4 km
+            vec3 Vl = rotateInv(b.rotation, V);
+            // Parallax: the top we see sits up-view of the ground point by height / tan(elevation).
+            float sinV = max(dot(p, Vl), 0.12);
+            vec3 Vt = (Vl - p * dot(p, Vl)) / sinV;
+            vec3 dPar = Vt * (clouds * hScale);
+            float cP = cloudAt(b, p, uv, east, north, cosLat, dPar, time, cloudDetail);
+            clouds = mix(clouds, cP, volW);
+            // Slope of the height field from two neighbours.
+            float cE = cloudAt(b, p, uv, east, north, cosLat, dPar + east * stepR, time, cloudDetail);
+            float cN = cloudAt(b, p, uv, east, north, cosLat, dPar + north * stepR, time, cloudDetail);
+            vec3 nCloud = normalize(p - east * ((cE - clouds) * hScale / stepR) - north * ((cN - clouds) * hScale / stepR));
+            float slopeLit = clamp(dot(nCloud, Ll), 0.0, 1.0) / max(dot(p, Ll), 0.05);
+            // Self-shadow: march up-sun over the deck; taller cover ahead than our own top plus the Sun's
+            // rise blocks the direct light. Three steps, 3/7/12 km.
+            float sinE = max(dot(p, Ll), 0.03);
+            vec3 Lt = normalize(Ll - p * dot(p, Ll) + 1e-6 * east);
+            float tanE = sinE / max(length(Ll - p * dot(p, Ll)), 0.03);
+            float top = clouds * hScale, block = 0.0;
+            float dists[3] = float[3](3.0, 7.0, 12.0);
+            for (int i = 0; i < 3; ++i) {
+                float dKm = dists[i];
+                float cS = cloudAt(b, p, uv, east, north, cosLat, dPar + Lt * (dKm / Rkm), time, cloudDetail);
+                float rise = (dKm / Rkm) * tanE;
+                block = max(block, smoothstep(0.0, 0.4 * hScale, cS * hScale - top - rise));
+            }
+            float selfShadow = 1.0 - 0.55 * block;
+            cloudShade = mix(1.0, clamp(mix(0.75, 1.0, slopeLit) * selfShadow, 0.2, 1.3), volW);
+            // Silver lining: thin edges lit from behind glow toward the camera (Sun ahead of us).
+            float edge = smoothstep(0.02, 0.15, clouds) * (1.0 - smoothstep(0.15, 0.6, clouds));
+            float forward = pow(max(dot(-V, L), 0.0), 6.0);
+            cloudRim = edge * forward * 0.35 * volW;
         }
-        color = mix(color, vec3(1.0) * diffuse * irradiance, clouds * 0.9) + spec * irradiance;
+        vec3 cloudCol = (vec3(1.0) * diffuse * cloudShade + vec3(0.06, 0.07, 0.09) * volW * max(dot(N, L), 0.0)) * irradiance;
+        color = mix(color, cloudCol, clouds * 0.9) + spec * irradiance + vec3(cloudRim) * irradiance * max(dot(N, L), 0.0);
         float night = smoothstep(0.05, -0.15, dot(N, L));
         vec3 lights = b.tex.y >= 0 ? sampleMap(b.tex.y, uv).rgb * vec3(1.0, 0.9, 0.75)
                                    : vec3(1.0, 0.75, 0.45) * smoothstep(0.62, 0.8, fbm(p * 14.0 + seed, 4)) * (1.0 - ocean);
         color += lights * night * (1.0 - clouds * 0.8) * 0.05;
+        // Lightning: a few storm cells under the thickest night-side cloud, each flashing for a fraction of
+        // a second every several seconds and lighting the cloud top from below.
+        if (night > 0.01 && clouds > 0.5) {
+            vec2 grid = vec2(1440.0, 720.0); // ~28 km cells
+            vec2 cell = floor(uv * grid);
+            float h0 = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+            float h1 = fract(sin(dot(cell, vec2(269.5, 183.3))) * 43758.5453);
+            float storm = step(0.97, h0); // ~3% of cloudy cells are active storms
+            float period = 4.0 + 12.0 * h1;
+            float phase = fract(time / period + h1 * 5.0);
+            float flash = smoothstep(0.0, 0.006, phase) * smoothstep(0.03, 0.012, phase);
+            flash += 0.5 * smoothstep(0.05, 0.056, phase) * smoothstep(0.07, 0.06, phase) * step(0.5, h0 * 7.0 - floor(h0 * 7.0));
+            vec2 c = fract(uv * grid) - 0.5;
+            float glow = exp(-dot(c, c) * 14.0);
+            color += vec3(0.8, 0.85, 1.0) * storm * flash * glow * night * smoothstep(0.5, 0.85, clouds) * 0.35;
+        }
+    } else if (type == ROCKY && b.tex.z >= 0) {
+        // An opaque cloud deck (Venus): the day map is the surface beneath it, seen only once the camera has
+        // descended below the cloud tops (~65 km). The deck super-rotates westward, about 100 m/s.
+        float altKm = (length(b.posRadius.xyz) - b.posRadius.w) * kKmPerParsecF;
+        float cover = smoothstep(48.0, 62.0, altKm);
+        vec3 deck = sampleMap(b.tex.z, uv - vec2(time * 2.6e-6, 0.0)).rgb;
+        float deckLit = clamp((dot(N, L) + 0.1) / 1.1, 0.0, 1.0) * crafts;
+        color = mix(color, deck * deckLit * irradiance, cover);
     }
 
     // Atmosphere rim: fresnel-weighted, coloured by the body, brighter on the day side.

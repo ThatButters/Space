@@ -13,4 +13,8 @@ gfx::ModelData makeApolloFlagModel();
 // with a ragged, expanding outer flame. Emissive, so it glows and blooms.
 gfx::ModelData makeExhaustPlumeModel();
 
+// The proxy for the exhaust trail behind the rocket: a long cone in metres from the engine plane down -Y,
+// ray-marched by the same shader as sunlit smoke instead of flame.
+gfx::ModelData makeExhaustTrailModel();
+
 } // namespace space
