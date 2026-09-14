@@ -238,6 +238,18 @@ vec3 surfaceDetail(Body b, int bodyIndex, vec3 hitWorld, vec3 nLocal, vec3 p, ve
     float mottle = blotches(q, 64.0, 29.0) * 0.45 + blotches(q, 16.0, 31.0) * 0.35 + blotches(q, 4.0, 37.0) * 0.2;
     albedoMod *= mix(1.0, 0.72 + 0.56 * mottle, reach * smoothstep(40.0, 2.0, footprintM) * (1.0 - patchW));
     slope *= mars ? 0.7 : 1.0;
+    // Regolith grain: centimetre-scale roughness and speckle, only within a few metres of the camera
+    // (below anything the orbital data resolves), so the ground beside a lander is soil, not a print.
+    float micro = smoothstep(0.10, 0.015, footprintM) * reach;
+    if (micro > 0.001) {
+        vec3 qm = q * 14.0;                                  // ~7 cm grain
+        const float e = 0.35;
+        float n0 = fbm(qm, 3);
+        float nx = fbm(qm + vec3(e, 0.0, 0.0), 3), ny = fbm(qm + vec3(0.0, e, 0.0), 3), nz = fbm(qm + vec3(0.0, 0.0, e), 3);
+        vec3 g = vec3(nx - n0, ny - n0, nz - n0) / e;
+        slope += g * (mars ? 0.25 : 0.33) * micro;
+        albedoMod *= 1.0 + (n0 - 0.5) * 0.22 * micro;
+    }
     vec3 tangentSlope = slope - nLocal * dot(slope, nLocal);
     return normalize(nLocal - tangentSlope);
 }
@@ -442,6 +454,37 @@ void main() {
         patchW = smoothstep(0.0, 0.08, min(edge.x, edge.y));
     }
     if (!hitOk) discard;
+    // Parallax occlusion over the patch's fine relief (metre-scale rims and boulders recovered from the
+    // orthophoto, stored in the normal map's blue channel as +-kFineM): from up close the view ray is
+    // marched through that height field so rocks and crater walls occlude what lies behind them.
+    if (patchW > 0.0 && b.patchTex.y >= 0) {
+        float pomW = patchW * (1.0 - smoothstep(0.6, 1.6, footprintM));
+        if (pomW > 0.0) {
+            vec3 Vl = rotateInv(b.rotation, -rd);                    // toward the camera, body-local
+            float sinV = max(dot(Vl, p), 0.08);
+            vec3 Vt = (Vl - p * dot(Vl, p)) / sinV;                 // horizontal metres per metre of height
+            vec2 duvPerM = vec2(dot(Vt, pc.patchEast.xyz) * pc.patchAnchor.z, dot(Vt, pc.patchNorth.xyz) * pc.patchAnchor.w);
+            const float kFineM = 2.0;
+            const int STEPS = 20;
+            float hStep = 2.0 * kFineM / float(STEPS);
+            float hRay = kFineM, hPrev = kFineM, sPrev = kFineM;
+            vec2 uvHit = puv;
+            for (int i = 0; i < STEPS; ++i) {
+                hRay -= hStep;
+                vec2 suv = puv - duvPerM * (kFineM - hRay);          // toward the camera as the ray descends
+                float sh = (textureGrad(uTex[nonuniformEXT(b.patchTex.y)], suv, pdx, pdy).b * 2.0 - 1.0) * kFineM;
+                if (sh >= hRay) {
+                    // Intersect the segment between the last two samples.
+                    float t = clamp((hPrev - sPrev) / max((hPrev - sPrev) - (hRay - sh), 1e-4), 0.0, 1.0);
+                    uvHit = puv - duvPerM * (kFineM - mix(hPrev, hRay, t));
+                    break;
+                }
+                hPrev = hRay;
+                sPrev = sh;
+            }
+            puv = mix(puv, uvHit, pomW);
+        }
+    }
     {
         vec3 row2 = vec3(pc.viewProj[0][2], pc.viewProj[1][2], pc.viewProj[2][2]);
         vec3 row3 = vec3(pc.viewProj[0][3], pc.viewProj[1][3], pc.viewProj[2][3]);
@@ -536,8 +579,15 @@ void main() {
         // limb instead of shading like a plastic ball, with enough Lambert for relief to read at low sun.
         float mu0 = max(dot(Ns, L), 0.0);
         float mu = max(dot(N, V), 0.02);
-        diffuse = mix(mu0, 2.0 * mu0 / (mu0 + mu + 1e-4), 0.55);
+        // Up close the relief has to read: lean toward Lambert there (the Lommel-Seeliger term flattens
+        // slope contrast), keep the limb-bright mix for the whole disc from afar.
+        float ls = mix(0.25, 0.55, smoothstep(30.0, 3000.0, footprintM));
+        diffuse = mix(mu0, 2.0 * mu0 / (mu0 + mu + 1e-4), ls);
         diffuse *= smoothstep(-0.02, 0.01, dot(N, L) + 0.02); // no light past the geometric terminator
+        // Opposition surge: regolith brightens sharply within a few degrees of the anti-solar point
+        // (shadow hiding), the bright halo around an astronaut's or a rover's own shadow.
+        float phase = acos(clamp(dot(L, V), -1.0, 1.0));
+        diffuse *= 1.0 + 0.45 * exp(-phase / 0.09);
     } else {
         float wrap = b.params.z * 0.15;
         diffuse = clamp((dot(Ns, L) + wrap) / (1.0 + wrap), 0.0, 1.0);
@@ -568,7 +618,19 @@ void main() {
 
     if (type == EARTH) {
         vec3 H = normalize(L + V);
-        float spec = pow(max(dot(N, H), 0.0), 60.0) * ocean * 0.12;
+        // Water: the painted map blue is replaced by a body colour (deep ocean nearly black-blue, coastal
+        // shelves greener where the map is lighter) under a Fresnel reflection of the sky, and a broad
+        // sun glint (rough sea) on top.
+        if (ocean > 0.0) {
+            float shelf = smoothstep(0.08, 0.35, albedo.b);           // the map's bathymetry shading
+            vec3 water = mix(vec3(0.004, 0.02, 0.05), vec3(0.03, 0.11, 0.13), shelf);
+            water *= 0.7 + 0.6 * fbm(p * 900.0 + seed, 3);            // currents and sediment
+            float fresW = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+            vec3 sky = vec3(0.25, 0.45, 0.85) * max(dot(N, L), 0.0);
+            vec3 sea = mix(water * diffuse, sky, fresW * 0.6) * irradiance;
+            color = mix(color, sea, ocean);
+        }
+        float spec = pow(max(dot(N, H), 0.0), 60.0) * ocean * 0.12 + pow(max(dot(N, H), 0.0), 900.0) * ocean * 0.5;
         // Clouds drift east at ~80 m/s (real weather, not a time-lapse).
         float clouds = b.tex.z >= 0 ? sampleMap(b.tex.z, uv + vec2(time * 2e-6, 0.0)).r
                                     : smoothstep(0.55, 0.75, fbm(p * 5.0 + vec3(time * 0.004, 0.0, 0.0) + seed * 5.0, 5));

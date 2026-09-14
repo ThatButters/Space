@@ -8,12 +8,16 @@ Output (same folder), read by the engine when all four exist:
   patch_albedo.dds   BC7 sRGB: the orthophoto with the image's own sun shading divided out (using the DTM),
                      tinted and scaled to match the global LROC colour map at the site; the lunar module in the
                      photo (and its shadow) painted out so the 3D model is not doubled
-  patch_normal.dds   BC5 east/north normal components from the DTM
-  patch_height.dds   R16 heights, mapped to [h_min, h_max] metres
+  patch_normal.dds   BC7: r,g east/north normal components, b the fine relief height (+-FINE_M m around 0.5) --
+                     from the DTM plus metre-scale relief recovered from the orthophoto's own shading
+                     (photoclinometry: brightness residuals along the Sun azimuth integrate to height)
+  patch_height.dds   R16 heights (DTM + fine relief), mapped to [h_min, h_max] metres
   patch.txt          "lon_min_deg lat_min_deg lon_span_deg lat_span_deg h_min_m h_max_m"
 The patch is cropped to a window around the lander (default 4 x 4 km) on a regular latitude/longitude grid.
 
-Usage: python scripts/bake_apollo_sites.py [--site apollo11] [--size-km 4] [--texbake path]
+Also bakes HiRISE sites on Mars (OTHER_SITES: "jezero" for Perseverance) from a DTEEC .IMG + ORTHO .JP2.
+
+Usage: python scripts/bake_apollo_sites.py [--site apollo11|jezero] [--size-km 4] [--texbake path]
 """
 import argparse
 import glob
@@ -30,6 +34,22 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SITES_DIR = os.path.join(ROOT, "assets", "textures", "apollo_sites")
 MOON_R = 1737400.0
+
+# Sites on other bodies (HiRISE for Mars): folder under assets/textures, the projection sphere radius the
+# products were mapped on, lander lat/lon (planetocentric), DTM attached-label .IMG, orthophoto .JP2 + .LBL,
+# and the orthophoto's Sun (incidence deg, map azimuth deg clockwise from north). No paint-out: a rover is
+# a few pixels at 25 cm and the model sits on top of it.
+OTHER_SITES = {
+    "jezero": {
+        "folder": os.path.join("mars_sites", "jezero"),
+        "radius": 3394839.8133163,
+        "latlon": (18.4447, 77.4508),  # Octavia E. Butler Landing (Perseverance)
+        "dtm": "DTEEC_045994_1985_046060_1985_U01.IMG",
+        "ortho": "ESP_045994_1985_RED_A_01_ORTHO.JP2",
+        "sun": (47.583, 267.0),  # ESP_045994_1985: 15:14 local, Sun in the west
+        "tint_map": "8k_mars.jpg",
+    },
+}
 
 # Lunar module descent stage positions (LROC, planetocentric east longitude).
 LM_SITES = {
@@ -100,11 +120,11 @@ def lon180(x):
     return (x + 180.0) % 360.0 - 180.0
 
 
-def crop_window(lab, shape, lat0, lon0, size_km):
+def crop_window(lab, shape, lat0, lon0, size_km, radius=MOON_R):
     h, w = shape
     lat_max, lat_min = lab["MAXIMUM_LATITUDE"], lab["MINIMUM_LATITUDE"]
     lon_w, lon_e = lon180(lab["WESTERNMOST_LONGITUDE"]), lon180(lab["EASTERNMOST_LONGITUDE"])
-    half_lat = math.degrees(size_km * 500.0 / MOON_R)
+    half_lat = math.degrees(size_km * 500.0 / radius)
     half_lon = half_lat / math.cos(math.radians(lat0))
     wlat0, wlat1 = max(lat0 - half_lat, lat_min), min(lat0 + half_lat, lat_max)
     wlon0, wlon1 = max(lon0 - half_lon, lon_w), min(lon0 + half_lon, lon_e)
@@ -136,6 +156,58 @@ def fill_nodata(a, valid):
         if not valid[r].any():
             out[r] = out[rows[np.argmin(np.abs(rows - r))]]
     return out
+
+
+FINE_M = 2.0  # the fine relief channel spans -FINE_M .. +FINE_M metres
+
+
+def box_blur(a, r):
+    """Separable box blur of radius r (two passes ~ Gaussian), edge-replicated, via cumulative sums."""
+    for _ in range(2):
+        for axis in (0, 1):
+            pad = np.pad(a, [(r + 1, r) if ax == axis else (0, 0) for ax in (0, 1)], mode="edge")
+            c = np.cumsum(pad, axis=axis, dtype=np.float64)
+            n = a.shape[axis]
+            if axis == 0:
+                a = ((c[2 * r + 1:2 * r + 1 + n, :] - c[:n, :]) / (2 * r + 1)).astype(np.float32)
+            else:
+                a = ((c[:, 2 * r + 1:2 * r + 1 + n] - c[:, :n]) / (2 * r + 1)).astype(np.float32)
+    return a
+
+
+def fine_relief(ratio, mask, inc, az, mpp, gain=1.0):
+    """Metre-scale height from an orthophoto: the brightness left after dividing out the DTM's shading is
+    the tilt of the ground toward the Sun (Lambert: dI/I ~ tan(incidence) * tilt). Integrating that tilt
+    along the Sun's azimuth gives height, high-passed so long shading gradients do not drift away.
+    ratio: image / DTM shading; mask: pixels to ignore (the lander); returns metres, zero mean locally."""
+    from scipy import ndimage, signal
+    local = box_blur(ratio, max(int(12.0 / mpp), 2))            # local mean brightness (~24 m)
+    res = ratio / np.maximum(local, 1e-3) - 1.0
+    res[mask] = 0.0
+    # Camera striping (per-column and per-row offsets) would integrate into ridges: take it out.
+    res = res - np.median(res, axis=0, keepdims=True)
+    res = res - np.median(res, axis=1, keepdims=True)
+    res = np.clip(box_blur(res, 1), -0.35, 0.35)                # sensor noise is one pixel; rocks are several
+    tilt = (res / max(math.tan(inc), 0.3) * gain).astype(np.float32)  # radians, positive = tilted toward the Sun
+    # Rotate so the Sun's map azimuth (clockwise from north) points along +columns, integrate, rotate back.
+    ang = 90.0 - az
+    rot = ndimage.rotate(tilt, ang, reshape=True, order=1, mode="constant", cval=0.0).astype(np.float32)
+    # Leaky integration from both sides (features ~15 m across and smaller keep their full height, long
+    # slopes fade away): height rises toward the Sun (+columns), so integrate from the far side.
+    k = math.exp(-mpp / 8.0)
+    fwd = signal.lfilter([mpp], [1.0, -k], rot[:, ::-1], axis=1)[:, ::-1]
+    bwd = -signal.lfilter([mpp], [1.0, -k], rot, axis=1)
+    h = (0.5 * (fwd + bwd)).astype(np.float32)
+    h = h - box_blur(h, max(int(12.0 / mpp), 4))
+    # A one-directional integration leaves fibres along the Sun line: soften across it.
+    h = ndimage.uniform_filter1d(h, max(int(1.5 / mpp), 2), axis=0)
+    back = ndimage.rotate(h, -ang, reshape=True, order=1, mode="constant", cval=0.0)
+    # Crop the rotated-back array to the original shape (rotation with reshape pads symmetrically).
+    oy = (back.shape[0] - ratio.shape[0]) // 2
+    ox = (back.shape[1] - ratio.shape[1]) // 2
+    fine = back[oy:oy + ratio.shape[0], ox:ox + ratio.shape[1]].astype(np.float32)
+    fine[mask] = 0.0
+    return np.clip(fine, -FINE_M, FINE_M), tilt
 
 
 def write_r16_dds(path, level0):
@@ -183,7 +255,155 @@ def global_colour_at(lat, lon):
     return lin.reshape(-1, 3).mean(axis=0)
 
 
+def global_colour_from(path, lat, lon):
+    """Mean linear colour of an equirectangular (-180..180) global map around lat/lon."""
+    if not os.path.exists(path):
+        return np.array([0.45, 0.28, 0.18])
+    Image.MAX_IMAGE_PIXELS = None
+    im = Image.open(path)
+    W, H = im.size
+    x = int((lon180(lon) + 180.0) / 360.0 * W)
+    y = int((90.0 - lat) / 180.0 * H)
+    crop = np.asarray(im.crop((x - 4, y - 4, x + 4, y + 4)).convert("RGB"), dtype=np.float32) / 255.0
+    lin = np.where(crop <= 0.04045, crop / 12.92, ((crop + 0.055) / 1.055) ** 2.4)
+    return lin.reshape(-1, 3).mean(axis=0)
+
+
+def sun_azimuth_check(res, dem, step, az_candidates):
+    """Which Sun azimuth explains the photo: the brightness residual should correlate positively with
+    the DTM slope toward the Sun. Returns (best azimuth, {azimuth: correlation})."""
+    gy, gx = np.gradient(dem, step)
+    d_e, d_n = gx, -gy
+    r = np.asarray(Image.fromarray(res.astype(np.float32)).resize((dem.shape[1], dem.shape[0]), Image.BILINEAR))
+    out = {}
+    for az in az_candidates:
+        a = math.radians(az)
+        tilt = d_e * math.sin(a) + d_n * math.cos(a)
+        m = np.isfinite(r) & np.isfinite(tilt)
+        out[az] = float(np.corrcoef(r[m].ravel(), tilt[m].ravel())[0, 1])
+    return max(out, key=out.get), out
+
+
+def bake_other_site(site, size_km, texbake):
+    """A HiRISE (or similar) site: attached-label DTM .IMG + JP2 orthophoto on the same equirectangular grid."""
+    spec = OTHER_SITES[site]
+    folder = os.path.join(ROOT, "assets", "textures", spec["folder"])
+    dtm_path = os.path.join(folder, spec["dtm"])
+    ortho_path = os.path.join(folder, spec["ortho"])
+    if not os.path.exists(dtm_path):
+        print(f"{site}: DTM not downloaded, skipping")
+        return False
+    lat0, lon0 = spec["latlon"]
+    radius = spec["radius"]
+    arr, lab = read_pds_img(dtm_path)
+    (r0, r1, c0, c1), bounds = crop_window(lab, arr.shape, lat0, lon0, size_km, radius)
+    dem = np.array(arr[r0:r1, c0:c1], dtype=np.float32)
+    valid = dem > -1e30
+    dem = fill_nodata(dem, valid)
+    h, w = dem.shape
+    step = lab["MAP_SCALE"]
+    lo, hi = float(dem.min()), float(dem.max())
+    print(f"{site}: DTM window {w}x{h} at {step:.2f} m, heights {lo:.1f} .. {hi:.1f} m, {valid.mean() * 100:.0f}% valid")
+    gy, gx = np.gradient(dem, step)
+    d_east, d_north = gx, -gy
+    inv = 1.0 / np.sqrt(1.0 + d_east ** 2 + d_north ** 2)
+    nx, ny = -d_east * inv, -d_north * inv
+
+    tint = global_colour_from(os.path.join(ROOT, "assets", "textures", spec["tint_map"]), lat0, lon0)
+    fine, tilt, sun_en, albedo = None, None, (0.0, 1.0), None
+    olbl = ortho_path[:-4] + ".LBL"
+    if os.path.exists(ortho_path) and os.path.exists(olbl):
+        os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", "2000000000")
+        import cv2
+        olab = read_label(olbl)
+        # Decode at half resolution (50 cm): the 4 km window then fits the 8192 texture cap.
+        full = cv2.imread(ortho_path, cv2.IMREAD_REDUCED_GRAYSCALE_2)
+        if full is None:
+            full = np.asarray(Image.open(ortho_path).reduce(2))
+        (q0, q1, p0, p1), _ = crop_window(olab, full.shape[:2], lat0, lon0, size_km, radius)
+        img = np.array(full[q0:q1, p0:p1], dtype=np.float32)
+        del full
+        good = img > 0
+        sun_inc, sun_az = spec["sun"]
+        inc, az = math.radians(sun_inc), math.radians(sun_az)
+        sun = np.array([math.sin(inc) * math.sin(az), math.sin(inc) * math.cos(az), math.cos(inc)])
+        shade = np.clip(nx * sun[0] + ny * sun[1] + inv * sun[2], 0.05, 1.0) / max(sun[2], 0.05)
+        shade_img = np.asarray(Image.fromarray(shade.astype(np.float32)).resize((img.shape[1], img.shape[0]), Image.BILINEAR))
+        flat = img / np.maximum(shade_img, 0.12)
+        flat[~good] = np.median(flat[good])
+        mpp = step * h / img.shape[0]
+        # Sanity check on the Sun azimuth: raw brightness must follow the DTM slope toward the Sun.
+        res0 = img / np.maximum(box_blur(img, max(int(12.0 / mpp), 2)), 1e-3) - 1.0
+        best, corr = sun_azimuth_check(res0, dem, step, [sun_az, (sun_az + 180.0) % 360.0])
+        print(f"{site}: Sun azimuth check {corr} -> using {sun_az:.0f}" + ("" if best == sun_az else "  (WARNING: opposite fits better)"))
+        mask = np.zeros(img.shape, dtype=bool)
+        fine, tilt = fine_relief(flat, mask | ~good, inc, az, mpp, gain=0.6)
+        sun_en = (math.sin(az), math.cos(az))
+        print(f"{site}: fine relief from shading, {np.abs(fine).mean():.2f} m mean, {np.abs(fine).max():.2f} m max")
+        flat = flat / np.median(flat) * float(tint.mean())
+        albedo = np.clip(flat[..., None] * (tint / max(tint.mean(), 1e-4))[None, None, :], 0.0, 1.0)
+        print(f"{site}: albedo from {os.path.basename(ortho_path)} ({img.shape[1]}x{img.shape[0]} at {mpp:.2f} m, incidence {sun_inc:.0f} deg)")
+    if albedo is None:
+        print(f"{site}: no orthophoto, using the global tint")
+        albedo = np.broadcast_to(tint, (h, w, 3)).copy()
+    write_patch(folder, site, dem, step, albedo, fine, tilt, sun_en, bounds, texbake)
+    return True
+
+
+def write_patch(folder, site, dem, step, albedo, fine, tilt, sun_en, bounds, texbake):
+    """The four output files from the DTM window, albedo and (optional) fine relief."""
+    h, w = dem.shape
+    ah, aw = albedo.shape[:2]
+    s = min(1.0, 8192.0 / max(ah, aw))
+    if fine is not None:
+        fh, fw = fine.shape
+        dem_up = np.asarray(Image.fromarray(dem).resize((fw, fh), Image.BILINEAR), dtype=np.float32)
+        full = dem_up + fine
+        step_f = step * (h / fh)
+    else:
+        fh, fw = h, w
+        dem_up = dem
+        full = dem
+        fine = np.zeros_like(dem)
+        step_f = step
+    lo, hi = float(full.min()), float(full.max())
+    gy, gx = np.gradient(full, step_f)
+    d_e, d_n = gx, -gy  # row 0 is north
+    if tilt is not None:
+        # Along the photo's Sun line the shading gives the slope directly (crisp, no integration fibres):
+        # the DTM's coarse slope plus the fine tilt; across it the integrated height is all there is.
+        ce, cn = np.gradient(dem_up, step_f)[1], -np.gradient(dem_up, step_f)[0]
+        par_coarse = ce * sun_en[0] + cn * sun_en[1]
+        par_fine = d_e * sun_en[0] + d_n * sun_en[1]
+        par_new = par_coarse + np.tan(tilt)
+        d_e = d_e + (par_new - par_fine) * sun_en[0]
+        d_n = d_n + (par_new - par_fine) * sun_en[1]
+    inv_f = 1.0 / np.sqrt(1.0 + d_e ** 2 + d_n ** 2)
+    nrm = np.empty((fh, fw, 3), dtype=np.uint8)
+    nrm[..., 0] = np.clip(-d_e * inv_f * 127.5 + 127.5 + 0.5, 0, 255)
+    nrm[..., 1] = np.clip(-d_n * inv_f * 127.5 + 127.5 + 0.5, 0, 255)
+    nrm[..., 2] = np.clip((fine / FINE_M * 0.5 + 0.5) * 255 + 0.5, 0, 255)
+    if s < 1.0:
+        nrm = np.asarray(Image.fromarray(nrm).resize((int(fw * s), int(fh * s)), Image.LANCZOS))
+    bake_raw(texbake, nrm, os.path.join(folder, "patch_normal.dds"), 3, ["--linear"])
+    hs = min(1.0, 8192.0 / max(fh, fw))
+    hn = (full - lo) / max(hi - lo, 1e-3)
+    if hs < 1.0:
+        hn = np.asarray(Image.fromarray(hn.astype(np.float32)).resize((int(fw * hs), int(fh * hs)), Image.BILINEAR))
+    write_r16_dds(os.path.join(folder, "patch_height.dds"), hn)
+    srgb = np.where(albedo <= 0.0031308, albedo * 12.92, 1.055 * np.power(albedo, 1 / 2.4) - 0.055)
+    rgb8 = (np.clip(srgb, 0, 1) * 255 + 0.5).astype(np.uint8)
+    if s < 1.0:
+        rgb8 = np.asarray(Image.fromarray(rgb8).resize((int(aw * s), int(ah * s)), Image.LANCZOS))
+    bake_raw(texbake, rgb8, os.path.join(folder, "patch_albedo.dds"), 3, [])
+    with open(os.path.join(folder, "patch.txt"), "w") as f:
+        f.write(f"{bounds[0]:.9f} {bounds[1]:.9f} {bounds[2]:.9f} {bounds[3]:.9f} {lo:.3f} {hi:.3f}\n")
+    print(f"{site}: patch written, bounds lon {bounds[0]:.5f}+{bounds[2]:.5f} lat {bounds[1]:.5f}+{bounds[3]:.5f}")
+
+
 def bake_site(site, size_km, texbake):
+    if site in OTHER_SITES:
+        return bake_other_site(site, size_km, texbake)
     folder = os.path.join(SITES_DIR, site)
     tag = site.upper()
     dtm_tif = os.path.join(folder, f"NAC_DTM_{tag}.TIF")
@@ -205,16 +425,13 @@ def bake_site(site, size_km, texbake):
     lo, hi = float(dem.min()), float(dem.max())
     print(f"{site}: DTM window {w}x{h} at {step:.2f} m, heights {lo:.1f} .. {hi:.1f} m")
 
-    # Normals (east/north components), central differences.
+    # DTM normals (east/north components), central differences: the image's own shading is divided out
+    # with these, and the fine relief recovered from the photo is added on top for the final maps.
     gy, gx = np.gradient(dem, step)
     d_east, d_north = gx, -gy  # row 0 is north
     inv = 1.0 / np.sqrt(1.0 + d_east ** 2 + d_north ** 2)
     nx, ny = -d_east * inv, -d_north * inv
-    rg = np.empty((h, w, 2), dtype=np.uint8)
-    rg[..., 0] = np.clip(nx * 127.5 + 127.5 + 0.5, 0, 255)
-    rg[..., 1] = np.clip(ny * 127.5 + 127.5 + 0.5, 0, 255)
-    bake_raw(texbake, rg, os.path.join(folder, "patch_normal.dds"), 2, ["--bc5"])
-    write_r16_dds(os.path.join(folder, "patch_height.dds"), (dem - lo) / max(hi - lo, 1e-3))
+    fine, tilt, sun_en = None, None, (0.0, 1.0)  # metres / radians at orthophoto resolution, once a photo is processed
 
     # Albedo from the orthophoto (prefer one with a moderate incidence angle).
     orthos = sorted(glob.glob(os.path.join(folder, f"NAC_DTM_{tag}_M*.TIF")) + glob.glob(os.path.join(folder, f"NAC_DTM_{tag}_M*CM.IMG")))
@@ -261,6 +478,10 @@ def bake_site(site, size_km, texbake):
         if mask.any():
             ring = (np.hypot(rel_c, rel_r) < 30.0 / mpp) & ~mask
             flat[mask] = np.median(flat[ring]) if ring.any() else np.median(flat)
+        # The relief the DTM cannot resolve (boulders, small craters, rims) from the photo's shading.
+        fine, tilt = fine_relief(flat, mask | ~good, inc, az, mpp, gain=0.6)
+        sun_en = (math.sin(az), math.cos(az))  # unit vector toward the Sun in (east, north)
+        print(f"{site}: fine relief from shading, {np.abs(fine).mean():.2f} m mean, {np.abs(fine).max():.2f} m max")
         # Normalise to the global map's brightness and colour at the site.
         flat = flat / np.median(flat) * float(tint.mean())
         albedo = np.clip(flat[..., None] * (tint / max(tint.mean(), 1e-4))[None, None, :], 0.0, 1.0)
@@ -269,18 +490,7 @@ def bake_site(site, size_km, texbake):
     if albedo is None:
         print(f"{site}: no usable orthophoto, using the DTM shading-free global tint")
         albedo = np.broadcast_to(tint, (h, w, 3)).copy()
-    # Cap the texture size (Vulkan limit and memory): at most 8192 on the long side.
-    ah, aw = albedo.shape[:2]
-    s = min(1.0, 8192.0 / max(ah, aw))
-    srgb = np.where(albedo <= 0.0031308, albedo * 12.92, 1.055 * np.power(albedo, 1 / 2.4) - 0.055)
-    rgb8 = (np.clip(srgb, 0, 1) * 255 + 0.5).astype(np.uint8)
-    if s < 1.0:
-        rgb8 = np.asarray(Image.fromarray(rgb8).resize((int(aw * s), int(ah * s)), Image.LANCZOS))
-    bake_raw(texbake, rgb8, os.path.join(folder, "patch_albedo.dds"), 3, [])
-
-    with open(os.path.join(folder, "patch.txt"), "w") as f:
-        f.write(f"{bounds[0]:.9f} {bounds[1]:.9f} {bounds[2]:.9f} {bounds[3]:.9f} {lo:.3f} {hi:.3f}\n")
-    print(f"{site}: patch written, bounds lon {bounds[0]:.5f}+{bounds[2]:.5f} lat {bounds[1]:.5f}+{bounds[3]:.5f}")
+    write_patch(folder, site, dem, step, albedo, fine, tilt, sun_en, bounds, texbake)
     return True
 
 
@@ -294,7 +504,7 @@ def main():
                                     if os.path.exists(p)), None)
     if not texbake:
         sys.exit("TexBake.exe not found: build the project first")
-    sites = [args.site] if args.site else sorted(LM_SITES)
+    sites = [args.site] if args.site else sorted(LM_SITES) + sorted(OTHER_SITES)
     for site in sites:
         bake_site(site, args.size_km, texbake)
 

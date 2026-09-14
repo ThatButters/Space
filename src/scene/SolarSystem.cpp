@@ -192,6 +192,13 @@ SolarSystem::SolarSystem() {
             moonBody.patches.push_back(sp);
         }
         m_bodies[mars].detailKind = 2.f;
+        // HiRISE terrain around Perseverance in Jezero crater (same bake script, OTHER_SITES).
+        {
+            SurfacePatch sp;
+            sp.name = "jezero";
+            sp.dir = "mars_sites/jezero/";
+            m_bodies[mars].patches.push_back(sp);
+        }
         m_bodies[find("Mercury")].detailKind = 1.f;
     }
     // USGS / NASA global mosaics and elevation models baked by scripts/bake_planets_hires.py. Each file is

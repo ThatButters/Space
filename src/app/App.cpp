@@ -1017,12 +1017,13 @@ void App::updateBackgroundAdaptation(double dt) {
         const double irradiance = std::pow(1.0 / std::max(au * au, 1e-6), 0.3);
         lit += cover * phase * irradiance * 0.3;
     }
-    const double target = m_eyeAdapt ? std::clamp(std::sqrt(lit / 0.008), 0.0, 1.0) : 0.0;
-    m_bgAdapt += (target - m_bgAdapt) * (1.0 - std::exp(-dt / 0.6)); // the eye takes a moment
+    // Gentle: a bright world in view dims the stars over a few seconds rather than switching them off.
+    const double target = m_eyeAdapt ? std::clamp(std::sqrt(lit / 0.012), 0.0, 1.0) : 0.0;
+    m_bgAdapt += (target - m_bgAdapt) * (1.0 - std::exp(-dt / 3.0)); // the eye takes a while
     const float a = (float)m_bgAdapt;
     auto fade = [a](float floor) { return 1.f + (floor - 1.f) * a; };
-    m_effective.starBrightness *= fade(0.01f);
-    m_effective.skyDensity *= fade(0.2f);
+    m_effective.starBrightness *= fade(0.12f);
+    m_effective.skyDensity *= fade(0.35f);
     m_effective.nebulaIntensity *= fade(0.05f);
     m_effective.galaxyGlow *= fade(0.04f);
     m_effective.nebulaGain *= fade(0.04f);
@@ -1064,10 +1065,10 @@ void App::updateShadowsAndDetail() {
             // big enough for the flag and the shadow tips.
             const glm::dvec3 up = glm::normalize(c.position - m_solar.body(c.parent).position);
             glm::dvec3 flat = L - up * glm::dot(L, up);
-            if (glm::length(flat) > 1e-9) centre -= glm::normalize(flat) * (26.0 / mPerPc);
+            if (glm::length(flat) > 1e-9) centre -= glm::normalize(flat) * (16.0 / mPerPc);
             centre += up * (3.0 / mPerPc);
-            halfM = 72.0;
-            rangeM = 250.0;
+            halfM = 44.0; // 2 cm per texel: crisp edges on the ground beside the lander
+            rangeM = 160.0;
         } else {
             halfM = c.sizeMeters * 0.75;
             rangeM = c.sizeMeters * 3.0;
