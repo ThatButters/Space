@@ -122,6 +122,46 @@ void addCylinder(gfx::ModelData& m, glm::vec3 a, glm::vec3 b, float radius, int 
 
 } // namespace
 
+gfx::ModelData makeExhaustPlumeModel() {
+    gfx::ModelData m;
+    auto cone = [&](float r0, float r1, float length, float ragged, glm::vec3 emissive, float seed) {
+        gfx::ModelPrimitive prim;
+        prim.firstIndex = (uint32_t)m.indices.size();
+        prim.baseColor = glm::vec4(0.05f, 0.03f, 0.02f, 1.f);
+        prim.emissiveFactor = emissive;
+        prim.roughness = 1.f;
+        const int rings = 24, segs = 28;
+        const uint32_t base = (uint32_t)m.vertices.size();
+        for (int j = 0; j <= rings; ++j) {
+            const float t = (float)j / rings;
+            const float y = -length * t;
+            for (int i = 0; i <= segs; ++i) {
+                const float a = (float)i / segs * glm::two_pi<float>();
+                const float rag = 1.f + ragged * (std::sin(a * 5.f + seed + t * 9.f) * 0.5f + std::sin(a * 3.f - t * 14.f + seed * 2.f) * 0.3f) * t;
+                const float r = (r0 + (r1 - r0) * t) * rag;
+                const glm::vec3 p(std::cos(a) * r, y, std::sin(a) * r);
+                m.vertices.push_back({p, glm::normalize(glm::vec3(std::cos(a), 0.25f, std::sin(a))), {(float)i / segs, t}});
+            }
+        }
+        for (int j = 0; j < rings; ++j)
+            for (int i = 0; i < segs; ++i) {
+                const uint32_t a = base + j * (segs + 1) + i, b = a + 1, c = a + segs + 1, d = c + 1;
+                m.indices.insert(m.indices.end(), {a, c, b, b, c, d});
+            }
+        prim.indexCount = (uint32_t)m.indices.size() - prim.firstIndex;
+        m.primitives.push_back(prim);
+    };
+    // A single enclosing proxy: the fragment shader ray-marches the flame inside it.
+    cone(9.0f, 100.0f, 212.f, 0.0f, glm::vec3(0.f), 0.f);
+    m.volumetricFlame = true;
+    m.boundsMin = m.boundsMax = m.vertices[0].position;
+    for (const auto& v : m.vertices) {
+        m.boundsMin = glm::min(m.boundsMin, v.position);
+        m.boundsMax = glm::max(m.boundsMax, v.position);
+    }
+    return m;
+}
+
 gfx::ModelData makeApolloFlagModel() {
     gfx::ModelData m;
     const float mastTop = 2.18f;              // visible mast height above the regolith

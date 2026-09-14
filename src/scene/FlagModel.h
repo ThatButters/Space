@@ -9,4 +9,8 @@ namespace space {
 // the Apollo 11 crossbar left when it did not fully extend. Texture is generated (50 stars, 13 stripes).
 gfx::ModelData makeApolloFlagModel();
 
+// A Saturn V first-stage exhaust plume in metres, origin at the engine plane, hanging down -Y: a bright core
+// with a ragged, expanding outer flame. Emissive, so it glows and blooms.
+gfx::ModelData makeExhaustPlumeModel();
+
 } // namespace space

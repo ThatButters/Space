@@ -141,6 +141,8 @@ public:
     // Registers a texture in the bindless array; returns its index (or -1 if the array is full).
     // clampU: for tiles of a larger map (no longitude wrap inside a tile).
     int addTexture(gfx::Texture&& texture, bool clampU = false);
+    // Swaps the texture at an index (live data refreshed while running). Waits for the GPU.
+    void replaceTexture(int index, gfx::Texture&& texture);
     static constexpr uint32_t kMaxTextures = 1024; // shaders declare uTex[1024]
 
     // Call once per frame: builds ImGui frame state so the app can submit UI between begin/end.
@@ -301,6 +303,7 @@ private:
         std::vector<gfx::ModelPrimitive> primitives; // imageIndex remapped to texture-array indices
         float extent = 1.f;
         float minY = 0.f;
+        bool flame = false;
     };
     std::vector<ModelGpu> m_models;
     VkPipelineLayout m_craftLayout = VK_NULL_HANDLE;
@@ -311,6 +314,7 @@ private:
     VkPipeline m_shadowPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_glintLayout = VK_NULL_HANDLE; // unresolved spacecraft as points of light
     VkPipeline m_glintPipeline = VK_NULL_HANDLE;
+    VkPipeline m_plumePipeline = VK_NULL_HANDLE; // ray-marched rocket exhaust (craft layout)
     VkImage m_shadowImage = VK_NULL_HANDLE;     // owned by its m_textures entry
     VkImageView m_shadowView = VK_NULL_HANDLE;
     int m_shadowTextureIndex = -1;

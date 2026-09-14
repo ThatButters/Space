@@ -358,7 +358,7 @@ uint32_t SolarSystem::buildGpuList(const glm::dvec3& cameraPos, std::vector<Body
         g.params = glm::vec4((float)b.type, b.seed, b.atmosphere,
                              b.type == BodyType::Sun ? 1.f : (hasRing ? b.ringInner : 0.f));
         g.tex = glm::ivec4(b.texDayIndex, b.texNightIndex, b.texCloudsIndex, hasRing ? b.texRingIndex : -1);
-        g.tiles = glm::ivec4(b.texTileBase, b.tileCols, b.tileRows, 0);
+        g.tiles = glm::ivec4(b.texTileBase, b.tileCols, b.tileRows, b.texCloudsLiveIndex);
         g.relief = glm::ivec4(b.texNormalIndex, b.texHeightIndex, -1, -1);
         g.reliefParams = glm::vec4(b.heightMinKm, b.heightRangeKm, 1.f, b.detailKind);
         g.patchTex = glm::ivec4(-1);

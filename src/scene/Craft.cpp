@@ -113,6 +113,20 @@ void CraftCatalog::build(const SolarSystem& solar) {
     surface("Viking 2", "viking.glb", 3.0f, "Mars", 47.64, 134.29, 90, "Utopia Planitia, 1976");
     surface("InSight", "insight.glb", 6.0f, "Mars", 4.502, 135.623, 0, "Elysium Planitia, 2018-2022");
     surface("Huygens", "huygens.glb", 2.7f, "Titan", -10.3, 167.7, 0, "Landed on Titan, January 2005");
+    // A Saturn V two minutes into an Apollo launch, 9 km over the Atlantic off Kennedy, pitched downrange.
+    surface("Saturn V", "saturn_v.glb", 111.f, "Earth", 28.62, -80.45, 72, "Apollo launch, T+2 min: 2,700 tonnes leaving Earth");
+    m_crafts.back().altitudeKm = 9.5;
+    m_crafts.back().modelPitchDeg = -38.f;
+    {
+        Craft plume = m_crafts.back();
+        plume.name = "Saturn V plume";
+        plume.model = "__plume__";
+        plume.sizeMeters = 1.f;
+        plume.listed = false;
+        plume.noLift = true;
+        plume.blurb = "";
+        m_crafts.push_back(plume);
+    }
     // Higher-quality NASA sources (scripts/fetch_models.py), falling back to the original GLBs.
     auto upgrade = [&](const char* name, const char* model, float size, float yaw, float pitch) {
         int i = find(name);
@@ -138,6 +152,7 @@ void CraftCatalog::build(const SolarSystem& solar) {
     // --- Orbiters (radius = body radius + altitude) ---
     orbit("ISS", "iss.glb", 109.f, "Earth", 6371 + 420, 92.9, 51.6, 0, 0, "International Space Station, 420 km");
     orbit("Hubble", "hubble.glb", 13.2f, "Earth", 6371 + 535, 95.4, 28.5, 60, 90, "Hubble Space Telescope, 535 km");
+    orbit("Apollo-Soyuz", "apollo_soyuz.glb", 20.f, "Earth", 6371 + 222, 88.9, 51.8, 120, 40, "Apollo and Soyuz docked, July 1975");
     orbit("LRO", "lro.glb", 4.3f, "Moon", 1737 + 50, 113, 90, 0, 0, "Lunar Reconnaissance Orbiter, 50 km polar");
     m_crafts.back().sunFacingPlane = true;
     orbit("MRO", "mro.glb", 13.6f, "Mars", 3390 + 300, 112, 93, 0, 0, "Mars Reconnaissance Orbiter");
@@ -232,6 +247,28 @@ void CraftCatalog::update(const SolarSystem& solar, double jd) {
         }
         case CraftPlacement::Orbit: {
             const Body& b = solar.body(c.parent);
+            if (c.tle) {
+                // Real elements: argument of latitude advances at the mean motion; the node regresses under
+                // J2 (about -5 deg/day for the ISS). Positions hold to a few hundred km for several days.
+                const double n = c.tleMeanMotion * glm::two_pi<double>() / 86400.0; // rad/s
+                const double mu = 398600.4418, J2 = 1.08263e-3, Re = 6378.137;
+                const double a = std::cbrt(mu / (n * n));
+                const double dtDays = jd - c.tleEpochJd;
+                const double inc = glm::radians(c.tleIncDeg);
+                const double raanDot = -1.5 * n * J2 * (Re / a) * (Re / a) * std::cos(inc); // rad/s
+                const double raan = glm::radians(c.tleRaanDeg) + raanDot * dtDays * 86400.0;
+                const double u = glm::radians(c.tleArgLatDeg) + n * dtDays * 86400.0;
+                const glm::dvec3 axis = glm::normalize(glm::dvec3(b.rotation * glm::vec3(0, 1, 0)));
+                glm::dvec3 e1 = solar.equinoxDirection();
+                e1 = glm::normalize(e1 - axis * glm::dot(e1, axis));
+                const glm::dvec3 e3 = glm::cross(axis, e1); // eastward from the equinox
+                const double cu = std::cos(u), su = std::sin(u), cO = std::cos(raan), sO = std::sin(raan), ci = std::cos(inc), si = std::sin(inc);
+                const glm::dvec3 world = e1 * (cu * cO - su * ci * sO) + e3 * (cu * sO + su * ci * cO) + axis * (su * si);
+                const glm::dvec3 vel = e1 * (-su * cO - cu * ci * sO) + e3 * (-su * sO + cu * ci * cO) + axis * (cu * si);
+                c.position = b.position + world * (a * pcPerKm);
+                c.rotation = frameFromUpForward(glm::vec3(-world), glm::vec3(vel));
+                break;
+            }
             const double minutes = days * 1440.0;
             const double ang = glm::radians(c.phaseDeg) + glm::two_pi<double>() * minutes / c.periodMinutes;
             const double inc = glm::radians(c.inclinationDeg);
@@ -321,7 +358,7 @@ void CraftCatalog::buildGpuList(const SolarSystem& solar, const glm::dvec3& came
         const float native = std::max(modelNativeExtent[c.modelIndex], 1e-6f);
         const float scale = (float)(c.sizeMeters / kMetersPerParsec) / native;
         // Surface craft: lift the model so its lowest point rests on the ground.
-        const float lift = (c.placement == CraftPlacement::Surface && c.modelIndex < (int)modelNativeMinY.size())
+        const float lift = (c.placement == CraftPlacement::Surface && !c.noLift && c.modelIndex < (int)modelNativeMinY.size())
                                ? -modelNativeMinY[c.modelIndex] : 0.f;
         const glm::quat fix = glm::angleAxis(glm::radians(c.modelYawDeg), glm::vec3(0, 1, 0)) *
                               glm::angleAxis(glm::radians(c.modelPitchDeg), glm::vec3(1, 0, 0));
@@ -507,9 +544,35 @@ double CraftCatalog::daylightJulianDate(const SolarSystem& solarIn, int index, d
     return jd;
 }
 
+bool CraftCatalog::applyTle(const std::string& name, const std::string& line1, const std::string& line2) {
+    const int i = find(name);
+    if (i < 0 || line1.size() < 69 || line2.size() < 69) return false;
+    Craft& c = m_crafts[i];
+    try {
+        const int yy = std::stoi(line1.substr(18, 2));
+        const double doy = std::stod(line1.substr(20, 12));
+        const int year = yy < 57 ? 2000 + yy : 1900 + yy;
+        // JD of Jan 0.0 of the year (Meeus).
+        const int y1 = year - 1;
+        const long A = y1 / 100, B = 2 - A + A / 4;
+        const double jd0 = std::floor(365.25 * (y1 + 4716)) + std::floor(30.6001 * 13) + 31 + B - 1524.5; // Dec 31 of y1
+        c.tleEpochJd = jd0 + doy;
+        c.tleIncDeg = std::stod(line2.substr(8, 8));
+        c.tleRaanDeg = std::stod(line2.substr(17, 8));
+        const double argp = std::stod(line2.substr(34, 8));
+        const double meanAnom = std::stod(line2.substr(43, 8));
+        c.tleArgLatDeg = argp + meanAnom;
+        c.tleMeanMotion = std::stod(line2.substr(52, 11));
+        c.tle = c.placement == CraftPlacement::Orbit;
+        return c.tle;
+    } catch (...) {
+        return false;
+    }
+}
+
 void CraftCatalog::rephaseForDaylight(const SolarSystem& solar, int index) {
     Craft& target = m_crafts[index];
-    if (target.placement != CraftPlacement::Orbit || target.parent < 0) return;
+    if (target.placement != CraftPlacement::Orbit || target.parent < 0 || target.tle) return; // real orbits stay real
     const Body& body = solar.body(target.parent);
     const bool airless = body.atmosphere <= 0.f;
     // Airless: a ~25 deg Sun where relief reads. With an atmosphere: the bright day side below.

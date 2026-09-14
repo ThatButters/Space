@@ -37,16 +37,26 @@ void Tour::stop(const char* reason) {
     m_active = false;
 }
 
-void Tour::start(const SolarSystem& solar, const Camera& camera) {
+void Tour::start(const SolarSystem& solar, const Camera& camera, size_t firstStop) {
     if (m_stops.empty()) return;
     LOG_INFO("Tour started");
     m_active = true;
-    m_next = 0;
+    m_next = firstStop % m_stops.size();
     beginFlight(solar, camera);
 }
 
 glm::dvec3 Tour::orbitOffset(const SolarSystem& solar, int body, double angle) const {
     const Body& b = solar.body(body);
+    if (m_mode == 1 && b.ringOuterKm > 0.f) {
+        // Ring pass: skim just above the ring plane, inside the bright B ring, drifting around the planet.
+        const double rr = b.ringOuterKm / kKmPerParsec * 0.78;
+        const glm::dvec3 axisR = glm::normalize(glm::dvec3(b.rotation * glm::vec3(0.f, 1.f, 0.f)));
+        glm::dvec3 toSunR = glm::normalize(solar.sunPosition() - b.position);
+        glm::dvec3 ur = glm::normalize(toSunR - axisR * glm::dot(toSunR, axisR));
+        const glm::dvec3 vr = glm::cross(axisR, ur);
+        const double side = glm::dot(toSunR, axisR) >= 0.0 ? 1.0 : -1.0; // the lit face of the rings
+        return (ur * std::cos(angle) + vr * std::sin(angle)) * rr + axisR * (side * rr * 0.028);
+    }
     const double r = b.radiusKm / kKmPerParsec * orbitRadii;
     // Orbit in the plane perpendicular to the body's spin axis, tilted 18 degrees so the poles show.
     // Angle 0 is the sunlit side, so every arrival sees the day face.
@@ -64,6 +74,7 @@ void Tour::beginFlight(const SolarSystem& solar, const Camera& camera) {
     m_next++;
     const int previousCraft = m_targetCraft;
     m_targetCraft = stop.craft;
+    m_mode = stop.mode;
     m_target = stop.body >= 0 ? stop.body : 0;
 
     // Departure frame: whichever body the camera is nearest (by radii).
@@ -354,6 +365,13 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
     m_orbitAngle += dt * glm::two_pi<double>() / (orbitSeconds * 2.6);
     camera.position = target.position + orbitOffset(solar, m_target, m_orbitAngle);
     glm::vec3 look = glm::normalize(glm::vec3(target.position - camera.position));
+    if (m_mode == 1) {
+        // Look ahead along the rings, the planet off to one side.
+        const glm::dvec3 axisR = glm::normalize(glm::dvec3(target.rotation * glm::vec3(0.f, 1.f, 0.f)));
+        const glm::dvec3 off = camera.position - target.position;
+        const glm::dvec3 ahead = glm::normalize(glm::cross(axisR, off));
+        look = glm::normalize(glm::vec3(ahead * 0.8 - glm::normalize(off) * 0.45 - axisR * 0.08));
+    }
     glm::vec3 up = glm::vec3(glm::normalize(glm::dvec3(target.rotation * glm::vec3(0.f, 1.f, 0.f))));
     glm::quat wantOrient = glm::quatLookAt(look, up);
     camera.orientation = glm::slerp(camera.orientation, wantOrient, (float)std::min(1.0, dt * 2.0));

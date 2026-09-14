@@ -17,13 +17,15 @@ public:
     struct Stop {
         int body = -1;
         int craft = -1;
+        int mode = 0; // 0 orbit the body, 1 fly through its rings
     };
+    int targetMode() const { return m_active ? m_mode : 0; }
     void setStops(std::vector<Stop> stops) { m_stops = std::move(stops); }
     void setCrafts(CraftCatalog* crafts) { m_crafts = crafts; }
     // True for the whole leg (approach and visit) of a spacecraft stop, so the clock can slow early.
     bool atCraft() const { return m_active && m_targetCraft >= 0; }
     bool inFlight() const { return m_active && m_phase == Phase::Flight; }
-    void start(const SolarSystem& solar, const Camera& camera);
+    void start(const SolarSystem& solar, const Camera& camera, size_t firstStop = 0);
     // The opening: a slow pass over Earth's dawn terminator at 650 km, then the stops in order.
     void startWithIntro(const SolarSystem& solar, int earth);
     bool introActive() const { return m_active && m_phase == Phase::Intro; }
@@ -70,6 +72,7 @@ private:
     glm::dvec3 departurePoint(const SolarSystem& solar) const;
     glm::quat m_fromOrient{1.f, 0.f, 0.f, 0.f};
     double m_orbitAngle = 0.0;
+    int m_mode = 0;
     bool m_clockActive = false;
     double m_clockFrom = 0.0, m_clockTo = 0.0;
 };

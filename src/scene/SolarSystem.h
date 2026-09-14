@@ -68,6 +68,7 @@ struct Body {
     std::string texNormal, texHeight; // optional relief maps (DDS) and the height range sidecar
     std::string heightRangeFile;
     int texNormalIndex = -1, texHeightIndex = -1;
+    int texCloudsLiveIndex = -1; // today's cloud cover (R opacity, G valid), fetched at launch
     float heightMinKm = 0.f, heightRangeKm = 0.f;
     float detailKind = 0.f; // close-range procedural surface detail (0 none, 1 lunar regolith, 2 martian)
     std::vector<SurfacePatch> patches; // local high-resolution terrain, loaded when present
@@ -99,6 +100,8 @@ public:
 
     glm::dvec3 sunPosition() const { return m_bodies[0].position; }
     double julianDate() const { return m_jd; }
+    // Direction of the vernal equinox (ICRS x axis) in engine coordinates: the reference for orbital elements.
+    glm::dvec3 equinoxDirection() const { return glm::normalize(m_eclipticToEngine * glm::dvec3(1.0, 0.0, 0.0)); }
 
     // Body-local unit direction for a latitude / east longitude (degrees). Longitude 0 is local +x,
     // east runs toward -z, north is +y (the same convention the surface maps use).

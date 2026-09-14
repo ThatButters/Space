@@ -13,6 +13,8 @@
 #include "audio/Analyzer.h"
 #include "audio/AudioCapture.h"
 
+#include <chrono>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -48,6 +50,15 @@ private:
     // Eye adaptation for the background: sunlit worlds filling the view wash out the stars, galaxy glow and
     // sky haze, the way a camera exposed for the Moon shows a black sky.
     void updateBackgroundAdaptation(double dt);
+    // Live data: today's clouds and current station orbits, fetched by scripts/fetch_today.py in the
+    // background at launch when stale, and loaded when the files change.
+    void startLiveFetch();
+    void pollLiveData();
+    bool loadLiveClouds();
+    bool loadTle();
+    void* m_liveProcess = nullptr;
+    double m_liveNextPoll = 0.0;
+    std::filesystem::file_time_type m_cloudsStamp{}, m_tleStamp{};
 
     Input m_input;
     std::unique_ptr<Window> m_window;
@@ -116,6 +127,7 @@ private:
     double m_startLat = 0.0, m_startLon = 0.0, m_startAltKm = 400.0;
     bool m_startTour = true; // the opening tour, unless a start place was given or --no-tour
     bool m_windowed = false;
+    int m_tourStart = -1; // --tour-start N: skip the intro and begin at stop N (debugging)
     std::vector<uint64_t> m_diagFrames;
     double m_diagTime = 0.0; // wall-clock seconds after start for a one-shot dump (0 = off)
     uint64_t m_frameCounter = 0;

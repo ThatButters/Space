@@ -365,7 +365,7 @@ void Renderer::shutdown() {
     if (m_postSetLayout) vkDestroyDescriptorSetLayout(dev, m_postSetLayout, nullptr);
     for (VkPipeline p : {m_skyPipeline, m_starPipeline, m_volumePipeline, m_planetPipeline, m_ringPipeline,
                          m_bloomDownPipeline, m_bloomUpPipeline, m_linePipeline, m_dustPipeline, m_atmoPipeline,
-                         m_cloudPipeline, m_craftPipeline, m_shadowPipeline, m_glintPipeline})
+                         m_cloudPipeline, m_craftPipeline, m_shadowPipeline, m_glintPipeline, m_plumePipeline})
         vkDestroyPipeline(dev, p, nullptr);
     for (VkPipelineLayout l : {m_skyLayout, m_starLayout, m_volumeLayout, m_bodyLayout, m_bloomLayout, m_lineLayout,
                                m_dustLayout, m_atmoLayout, m_cloudLayout, m_craftLayout, m_glintLayout})
@@ -738,6 +738,13 @@ void Renderer::createPipelines() {
     glint.depthTest = true;
     m_glintPipeline = gfx::createGraphicsPipeline(*m_ctx, glint);
 
+    gfx::GraphicsPipelineDesc plume = craft;
+    plume.fragmentShader = "plume.frag.spv";
+    plume.blend = gfx::BlendMode::PremultipliedOver;
+    plume.depthWrite = false;
+    plume.cullBack = false;
+    m_plumePipeline = gfx::createGraphicsPipeline(*m_ctx, plume);
+
     m_cloudLayout = gfx::createPipelineLayout(*m_ctx, {m_ssboBothSetLayout}, sizeof(ViewPushConstants),
                                               VK_SHADER_STAGE_FRAGMENT_BIT);
     gfx::GraphicsPipelineDesc cloud;
@@ -827,6 +834,7 @@ int Renderer::addModel(const gfx::ModelData& model) {
                                         VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     m.extent = model.extent();
     m.minY = model.boundsMin.y;
+    m.flame = model.volumetricFlame;
     std::vector<int> imageToTexture(model.images.size(), -1);
     for (size_t i = 0; i < model.images.size(); ++i) {
         gfx::Texture t;
@@ -880,7 +888,7 @@ void Renderer::recordShadowPass(VkCommandBuffer cmd, const FrameScene& scene) {
     for (int i : scene.shadowCasters) {
         if (i < 0 || (size_t)i >= n || (size_t)i >= scene.craftModels.size()) continue;
         const int mi = scene.craftModels[i];
-        if (mi < 0 || mi >= (int)m_models.size()) continue;
+        if (mi < 0 || mi >= (int)m_models.size() || m_models[mi].flame) continue;
         const ModelGpu& m = m_models[mi];
         vkCmdBindVertexBuffers(cmd, 0, 1, &m.vb.buffer, &zero);
         vkCmdBindIndexBuffer(cmd, m.ib.buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -899,6 +907,25 @@ void Renderer::recordShadowPass(VkCommandBuffer cmd, const FrameScene& scene) {
                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+}
+
+void Renderer::replaceTexture(int index, gfx::Texture&& texture) {
+    if (index < 0 || index >= (int)m_textures.size()) {
+        texture.destroy(*m_ctx);
+        return;
+    }
+    m_ctx->waitIdle();
+    m_textures[index].destroy(*m_ctx);
+    m_textures[index] = std::move(texture);
+    VkDescriptorImageInfo info{m_textureSampler, m_textures[index].image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = m_textureSet;
+    write.dstBinding = 0;
+    write.dstArrayElement = (uint32_t)index;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &info;
+    vkUpdateDescriptorSets(m_ctx->device(), 1, &write, 0, nullptr);
 }
 
 int Renderer::addTextureWith(gfx::Texture&& texture, VkSampler sampler) {
@@ -1261,7 +1288,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             const size_t n = std::min<size_t>(scene.crafts.size(), kMaxCrafts);
             for (size_t i = 0; i < n; ++i) {
                 const int mi = i < scene.craftModels.size() ? scene.craftModels[i] : -1;
-                if (mi < 0 || mi >= (int)m_models.size()) continue;
+                if (mi < 0 || mi >= (int)m_models.size() || m_models[mi].flame) continue;
                 // Skip instances too far to cover a pixel: model extent / distance vs pixel angle.
                 const glm::vec3 rel = glm::vec3(scene.crafts[i].model[3]);
                 const float dist = glm::length(rel);
@@ -1285,6 +1312,34 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
                                        sizeof(cpc), &cpc);
                     vkCmdDrawIndexed(cmd, prim.indexCount, 1, prim.firstIndex, 0, 0);
                 }
+            }
+        }
+
+        // Rocket exhaust: ray-marched volumes, blended after the opaque craft.
+        if (!scene.crafts.empty() && settings.drawBodies) {
+            const size_t n = std::min<size_t>(scene.crafts.size(), kMaxCrafts);
+            const VkDeviceSize zero = 0;
+            bool bound = false;
+            for (size_t i = 0; i < n; ++i) {
+                const int mi = i < scene.craftModels.size() ? scene.craftModels[i] : -1;
+                if (mi < 0 || mi >= (int)m_models.size() || !m_models[mi].flame) continue;
+                if (!bound) {
+                    VkDescriptorSet sets[] = {frame.craftSet, m_textureSet};
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_plumePipeline);
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_craftLayout, 0, 2, sets, 0, nullptr);
+                    bound = true;
+                }
+                const ModelGpu& m = m_models[mi];
+                vkCmdBindVertexBuffers(cmd, 0, 1, &m.vb.buffer, &zero);
+                vkCmdBindIndexBuffer(cmd, m.ib.buffer, 0, VK_INDEX_TYPE_UINT32);
+                CraftPushConstants cpc{};
+                cpc.viewProj = viewProj;
+                cpc.ids = glm::ivec4((int)i, -1, -1, -1);
+                cpc.shadowInfo = shadowInfo;
+                cpc.uvTransform = glm::vec4((float)time, 0.f, 1.f, 1.f);
+                cpc.emissive = glm::vec4(0.f, 0.f, 0.f, -1.f);
+                vkCmdPushConstants(cmd, m_craftLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(cpc), &cpc);
+                for (const auto& prim : m.primitives) vkCmdDrawIndexed(cmd, prim.indexCount, 1, prim.firstIndex, 0, 0);
             }
         }
 

@@ -28,6 +28,10 @@ struct Craft {
     float modelYawDeg = 0.f;   // extra rotation about model +Y, for sources with a different forward axis
     float modelPitchDeg = 0.f; // then about model +X
     float cropAboveY = 1e9f;   // model-space Y above which the mesh is not drawn (stages that left)
+    bool noLift = false;       // generated scenery already placed relative to the ground
+    // Live two-line elements (CelesTrak): circular-orbit propagation with J2 node regression.
+    bool tle = false;
+    double tleEpochJd = 0.0, tleIncDeg = 0.0, tleRaanDeg = 0.0, tleArgLatDeg = 0.0, tleMeanMotion = 15.5;
     float sizeMeters = 10.f; // largest dimension after scaling
     CraftPlacement placement = CraftPlacement::Surface;
     int parent = -1;   // body index
@@ -87,6 +91,8 @@ public:
     // the first Julian date at or after jd when the Sun stands at a good elevation over it, or jd itself
     // when it already does (or the craft is not on a surface).
     double daylightJulianDate(const SolarSystem& solar, int index, double jd) const;
+    // Applies a two-line element set to the craft with this name (ISS, Hubble); false if unknown.
+    bool applyTle(const std::string& name, const std::string& line1, const std::string& line2);
     // Orbiters: the catalogue's orbital phases are illustrative, so instead of moving the clock (which makes
     // a fast orbiter lap its planet mid-flight), slide the phase so the craft is over a well-lit stretch.
     void rephaseForDaylight(const SolarSystem& solar, int index);

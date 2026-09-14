@@ -39,6 +39,7 @@ struct ModelData {
     std::vector<DecodedImage> images; // textures; DecodedImage::srgb tells colour from linear data
     glm::vec3 boundsMin{0.f}, boundsMax{0.f};
     float extent() const { return glm::length(boundsMax - boundsMin); }
+    bool volumetricFlame = false; // drawn by the ray-marched exhaust shader instead of the surface shader
 };
 
 // Loads a .glb or .gltf (external .bin / image files resolved relative to the .gltf, or data: URIs) with the

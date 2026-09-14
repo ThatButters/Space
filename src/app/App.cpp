@@ -16,6 +16,7 @@
 #include <fstream>
 
 #include <cctype>
+#include <windows.h>
 #include <future>
 #include <unordered_map>
 
@@ -65,6 +66,7 @@ App::App(int argc, char** argv) {
         else if (a == "--sdr") m_settings.hdrOutput = false;
         else if (a == "--tour") m_startTour = true;
         else if (a == "--no-tour") m_startTour = false;
+        else if (a == "--tour-start" && i + 1 < argc) m_tourStart = std::atoi(argv[++i]);
         else if (a == "--ui") m_showUi = true;
         else if (a == "--windowed") { if (width <= 0) { width = 1600; height = 900; } }
         else if (a == "--tour-pace" && i + 1 < argc) m_tourSpeed = (float)std::atof(argv[++i]);
@@ -100,17 +102,21 @@ App::App(int argc, char** argv) {
             return Tour::Stop{c >= 0 ? m_crafts.crafts()[c].parent : -1, c};
         };
         std::vector<Tour::Stop> stops = {
-            craft("ISS"), body("Moon"), craft("Apollo 11 (Tranquility Base)"), craft("LRO"),
+            craft("ISS"), craft("Saturn V"), body("Moon"), craft("Apollo 11 (Tranquility Base)"), craft("LRO"),
             body("Mars"), craft("Perseverance"), craft("MRO"), body("Jupiter"), craft("Juno"), body("Io"),
-            body("Saturn"), body("Titan"), craft("Huygens"), body("Uranus"), body("Neptune"),
+            body("Saturn"), Tour::Stop{m_solar.find("Saturn"), -1, 1}, body("Titan"), craft("Huygens"), body("Uranus"), body("Neptune"),
             craft("Voyager 1"), body("Sun"), craft("Parker Solar Probe"), body("Mercury"), body("Venus"),
-            craft("JWST"), craft("Hubble"), body("Earth")};
+            craft("JWST"), craft("Hubble"), craft("Apollo-Soyuz"), body("Earth")};
         std::vector<Tour::Stop> valid;
         for (auto& s : stops)
             if (s.body >= 0 || s.craft >= 0) valid.push_back(s);
         m_tour.setStops(valid);
     }
-    if (m_startTour) m_tour.startWithIntro(m_solar, m_solar.find("Earth"));
+    loadTle();
+    loadLiveClouds();
+    startLiveFetch();
+    if (m_tourStart >= 0) m_tour.start(m_solar, m_camera, (size_t)m_tourStart);
+    else if (m_startTour) m_tour.startWithIntro(m_solar, m_solar.find("Earth"));
     LOG_INFO("Ready. Hold right mouse to look, WASD/RF to fly, scroll to change speed, 0-9 visit bodies, F1 UI.");
 }
 
@@ -285,10 +291,10 @@ void App::loadModels() {
         if (std::find(names.begin(), names.end(), c.model) == names.end()) names.push_back(c.model);
     std::vector<std::future<std::pair<bool, gfx::ModelData>>> jobs;
     for (const auto& n : names)
-        jobs.push_back(std::async(std::launch::async, [path = dir / n, generated = n == "__flag__"] {
+        jobs.push_back(std::async(std::launch::async, [path = dir / n, name = n] {
             gfx::ModelData data;
-            if (generated) {
-                data = makeApolloFlagModel();
+            if (name == "__flag__" || name == "__plume__") {
+                data = name == "__flag__" ? makeApolloFlagModel() : makeExhaustPlumeModel();
                 return std::make_pair(true, std::move(data));
             }
             bool ok = gfx::loadGlb(path, data);
@@ -309,7 +315,7 @@ void App::loadModels() {
     for (Craft& c : m_crafts.crafts()) {
         c.modelIndex = loaded[c.model];
         // Generated scenery is built in metres: keep it at its true size.
-        if (c.model == "__flag__" && c.modelIndex >= 0) c.sizeMeters = m_renderer.modelExtent(c.modelIndex);
+        if ((c.model == "__flag__" || c.model == "__plume__") && c.modelIndex >= 0) c.sizeMeters = m_renderer.modelExtent(c.modelIndex);
     }
     int ok = 0;
     for (const auto& kv : loaded) ok += kv.second >= 0;
@@ -597,6 +603,9 @@ void App::drawOverlay(double dt) {
         if (tc >= 0) {
             name = m_crafts.crafts()[tc].name;
             blurb = m_crafts.crafts()[tc].blurb;
+        } else if (tb >= 0 && m_tour.targetMode() == 1) {
+            name = m_solar.body(tb).name + "'s rings";
+            blurb = "ice from dust grains to houses, in a sheet ten metres thick";
         } else if (tb >= 0) {
             name = m_solar.body(tb).name;
             static const std::unordered_map<std::string, std::string> blurbs = {
@@ -659,6 +668,92 @@ void App::drawOverlay(double dt) {
             text(font, smallPx, ImVec2(pos.x, pos.y + bodyPx + 2.f * scale), IM_COL32(220, 220, 230, 180), sub.c_str());
         }
     }
+}
+
+bool App::loadTle() {
+    const auto path = assetDirectory() / "models" / "tle.txt";
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return false;
+    const auto stamp = std::filesystem::last_write_time(path, ec);
+    if (stamp == m_tleStamp) return false;
+    m_tleStamp = stamp;
+    std::ifstream f(path);
+    std::string name, l1, l2;
+    int applied = 0;
+    while (std::getline(f, name) && std::getline(f, l1) && std::getline(f, l2))
+        if (m_crafts.applyTle(name, l1, l2)) ++applied;
+    if (applied) {
+        m_crafts.update(m_solar, m_epochJd + m_simDays);
+        LOG_INFO("Live orbits: {} spacecraft on today's elements", applied);
+    }
+    return applied > 0;
+}
+
+bool App::loadLiveClouds() {
+    const auto dir = assetDirectory() / "textures" / "earth_hires";
+    const auto png = dir / "clouds_today.png";
+    std::error_code ec;
+    if (!std::filesystem::exists(png, ec)) return false;
+    const auto stamp = std::filesystem::last_write_time(png, ec);
+    if (stamp == m_cloudsStamp) return false;
+    gfx::DecodedImage img = gfx::decodeImage(png);
+    if (!img.ok()) return false;
+    m_cloudsStamp = stamp;
+    gfx::Texture tex;
+    if (!tex.upload(m_ctx, img, false, "clouds today")) return false;
+    Body& earth = m_solar.bodies()[m_solar.find("Earth")];
+    if (earth.texCloudsLiveIndex < 0) earth.texCloudsLiveIndex = m_renderer.addTexture(std::move(tex));
+    else m_renderer.replaceTexture(earth.texCloudsLiveIndex, std::move(tex));
+    std::string date;
+    std::ifstream(dir / "clouds_today.txt") >> date;
+    LOG_INFO("Live clouds: NASA GIBS imagery for {}", date);
+    return true;
+}
+
+void App::startLiveFetch() {
+    // Fresh enough? Clouds dated today or yesterday (UTC) and elements under 12 hours old skip the fetch.
+    const auto dir = assetDirectory();
+    std::error_code ec;
+    bool stale = true;
+    const auto tlePath = dir / "models" / "tle.txt";
+    const auto cloudsTxt = dir / "textures" / "earth_hires" / "clouds_today.txt";
+    if (std::filesystem::exists(tlePath, ec) && std::filesystem::exists(cloudsTxt, ec)) {
+        const auto now = std::filesystem::file_time_type::clock::now();
+        const auto tleAge = now - std::filesystem::last_write_time(tlePath, ec);
+        const auto cloudAge = now - std::filesystem::last_write_time(cloudsTxt, ec);
+        stale = tleAge > std::chrono::hours(12) || cloudAge > std::chrono::hours(20);
+    }
+    if (!stale) return;
+    const std::string script = (dir.parent_path() / "scripts" / "fetch_today.py").string();
+    std::string cmd = "python \"" + script + "\"";
+    STARTUPINFOA si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    std::vector<char> buf(cmd.begin(), cmd.end());
+    buf.push_back(0);
+    if (CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, dir.parent_path().string().c_str(), &si, &pi)) {
+        CloseHandle(pi.hThread);
+        m_liveProcess = pi.hProcess;
+        LOG_INFO("Live data: fetching today's clouds and orbits in the background");
+    } else {
+        LOG_WARN("Live data: could not start python (run scripts/fetch_today.py by hand)");
+    }
+}
+
+void App::pollLiveData() {
+    const double now = glfwGetTime();
+    if (now < m_liveNextPoll) return;
+    m_liveNextPoll = now + 3.0;
+    if (m_liveProcess) {
+        if (WaitForSingleObject((HANDLE)m_liveProcess, 0) == WAIT_OBJECT_0) {
+            CloseHandle((HANDLE)m_liveProcess);
+            m_liveProcess = nullptr;
+        } else {
+            return; // still downloading: the files are being written
+        }
+    }
+    loadTle();
+    loadLiveClouds();
 }
 
 void App::goToSurface(int index, double latDeg, double lonDeg, double altKm) {
@@ -827,6 +922,7 @@ void App::updateScene(double dt) {
         }
         updateShadowsAndDetail();
         updateBackgroundAdaptation(dt);
+        pollLiveData();
         // Orbiters race around at the default time scale; slow the clock while the tour visits one.
         if (m_tour.atCraft()) {
             if (m_savedTimeScale < 0.f) {

@@ -542,14 +542,20 @@ void main() {
         float spec = pow(max(dot(N, H), 0.0), 60.0) * ocean * 0.12;
         float clouds = b.tex.z >= 0 ? sampleMap(b.tex.z, uv + vec2(time * 0.0004, 0.0)).r
                                     : smoothstep(0.55, 0.75, fbm(p * 5.0 + vec3(time * 0.004, 0.0, 0.0) + seed * 5.0, 5));
+        if (b.tiles.w >= 0) {
+            // Today's real cloud cover where the satellite passes have data; the static map elsewhere.
+            vec2 live = sampleMap(b.tiles.w, uv).rg;
+            clouds = mix(clouds, live.r, live.g);
+        }
         // Below the cloud map's ~5 km pixels, break the edges up with fine cellular structure (only when the
         // camera is close enough for a map pixel to span several screen pixels).
         float cloudDetail = 1.0 - smoothstep(600.0, 2500.0, footprintM);
         if (cloudDetail > 0.0 && clouds > 0.01) {
             vec3 pd = p + vec3(time * 0.0004 * 6.2831853, 0.0, 0.0);
             float fine = fbm(pd * 1500.0, 4) * 0.6 + fbm(pd * 6000.0, 3) * 0.4;
-            float shaped = smoothstep(0.18, 0.85, clouds + (fine - 0.5) * 0.9 * (1.0 - clouds * 0.5));
-            clouds = mix(clouds, shaped * (0.75 + 0.25 * clouds), cloudDetail);
+            // Mottle rather than shred: thin cloud stays thin, edges get structure.
+            float shaped = clouds * clamp(0.45 + 1.1 * fine, 0.0, 1.4) * smoothstep(0.02, 0.25, clouds + (fine - 0.5) * 0.3);
+            clouds = clamp(mix(clouds, shaped, cloudDetail), 0.0, 1.0);
         }
         color = mix(color, vec3(1.0) * diffuse * irradiance, clouds * 0.9) + spec * irradiance;
         float night = smoothstep(0.05, -0.15, dot(N, L));

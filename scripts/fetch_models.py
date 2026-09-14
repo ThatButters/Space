@@ -32,6 +32,8 @@ MODELS = {
     "parker.glb": "Parker Solar Probe/Parker Solar Probe.glb",
     "pioneer10.glb": "Pioneer 10/Pioneer 10.glb",
     "voyager.glb": "Voyager Probe (B)/Voyager Probe (B).glb",
+    "saturn_v.glb": "Saturn V/Saturn V.glb",
+    "apollo_soyuz.glb": "Apollo Soyuz/Apollo Soyuz.glb",
     # Higher-quality replacements (loaded in preference to the files above when present).
     "iss_hd.glb": "International Space Station (ISS) (D) (IGOAL)/International Space Station (ISS).glb",
 }
