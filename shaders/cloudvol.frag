@@ -46,7 +46,7 @@ layout(location = 0) out vec4 outColor;
 
 const float kKmPerParsecF = 3.0856775814913673e13;
 const float kBaseKm = 1.5, kTopKm = 6.5;   // the layer
-const float kSigmaPerKm = 14.0;            // extinction of dense cloud (a little under real, for depth)
+const float kSigmaPerKm = 7.0;             // extinction of dense cloud (under real, so edges stay translucent)
 const int STEPS = 32;
 
 vec2 sphereUv(vec3 p) { return vec2(0.5 - atan(p.z, p.x) / (2.0 * PI), acos(clamp(p.y, -1.0, 1.0)) / PI); }
@@ -85,7 +85,7 @@ float densityAt(Body b, vec3 p, float base, float top, float time, out float hn)
     vec3 q = pl + vec3(time * 1.2e-5, 0.0, 0.0);
     float n0 = gfbm(q * 300.0, 3);
     float gap = smoothstep(0.32, 0.62, n0);                  // cells: about half of a solid deck opens up
-    float d0 = smoothstep(0.08, 0.75, cov * mix(0.3, 1.25, gap));
+    float d0 = smoothstep(0.05, 0.9, cov * mix(0.3, 1.25, gap));
     if (d0 <= 0.002) return 0.0;
     // Cauliflower: three scales of 3D gradient noise (~5 km, ~1.3 km, ~400 m). The coarse one also
     // sets how tall each tower is, so the tops are domes and hollows rather than a plateau.
@@ -98,8 +98,11 @@ float densityAt(Body b, vec3 p, float base, float top, float time, out float hn)
     float n3 = gfbm(q * 16000.0 + 7.7, 2);
     // Erosion, strongest in thin cover and toward the tops, so edges fray into wisps.
     float erode = 0.75 + 0.5 * (1.0 - d0) + 0.3 * hn;
-    float dens = d0 * 1.15 - (1.0 - n1) * 0.55 * erode - (1.0 - n2) * 0.4 * erode - (1.0 - n3) * 0.25;
-    return clamp(dens, 0.0, 1.0) * prof;
+    float dens = d0 * 1.15 - (1.0 - n1) * 0.55 * erode - (1.0 - n2) * 0.4 * erode - (1.0 - n3) * 0.2;
+    // Soft: density ramps in gently at the margins (a thin veil of haze before the cloud proper).
+    dens = clamp(dens, 0.0, 1.0);
+    float veil = 0.06 * d0 * smoothstep(0.0, 0.15, hn) * (1.0 - smoothstep(0.4, 0.8, hn));
+    return (dens * dens * (3.0 - 2.0 * dens) * 0.9 + veil) * prof;
 }
 
 float hg(float mu, float g) {
@@ -167,7 +170,7 @@ void main() {
         // Beer with a multiple-scatter tail, and the powder term that darkens the deep interior of thick
         // cloud relative to its lit, low-density rim.
         float powder = 1.0 - 0.5 * exp(-dens * 6.0);
-        float lit = night ? 0.0 : (0.6 * exp(-odSun) + 0.4 * exp(-odSun * 0.15)) * powder;
+        float lit = night ? 0.0 : (0.5 * exp(-odSun) + 0.5 * exp(-odSun * 0.12)) * powder;
         vec3 up = normalize(p);
         float day = clamp(dot(up, sunDir) * 2.0 + 0.3, 0.0, 1.0);
         vec3 sun = vec3(1.0, 0.98, 0.95) * lit * phase * 0.4;
