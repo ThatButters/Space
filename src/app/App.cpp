@@ -606,7 +606,7 @@ void App::drawOverlay(double dt) {
         if (a > 0.f) {
             const float titlePx = 64.f * scale, subPx = 20.f * scale;
             const char* t1 = "SPACE";
-            const char* t2 = "the solar system, as it is tonight";
+            const char* t2 = "the solar system tonight, and everywhere we've been";
             const float w1 = width(title, titlePx, t1), w2 = width(font, subPx, t2);
             text(title, titlePx, ImVec2((w - w1) * 0.5f, h * 0.30f), IM_COL32(255, 255, 255, (int)(a * 235)), t1);
             text(font, subPx, ImVec2((w - w2) * 0.5f, h * 0.30f + titlePx + 6.f * scale), IM_COL32(220, 225, 240, (int)(a * 200)), t2);
