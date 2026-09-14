@@ -344,9 +344,13 @@ float cloudAt(Body b, vec3 p, vec2 uv, vec3 east, vec3 north, float cosLat, vec3
     }
     if (detailW > 0.0 && c > 0.01) {
         vec3 pd = p + d + vec3(time * 2e-6 * 6.2831853, 0.0, 0.0);
-        float fine = fbm(pd * 1500.0, 4) * 0.6 + fbm(pd * 6000.0, 3) * 0.4;
-        // Mottle rather than shred: thin cloud stays thin, edges get structure.
-        float shaped = c * clamp(0.45 + 1.1 * fine, 0.0, 1.4) * smoothstep(0.02, 0.25, c + (fine - 0.5) * 0.3);
+        // Cauliflower tops: gradient noise (no lattice facets) warped by a coarser field, ~4 km and ~1 km.
+        vec3 warp = vec3(gfbm(pd * 600.0, 2), gfbm(pd * 600.0 + 7.3, 2), 0.5) - 0.5;
+        float fine = gfbm(pd * 1500.0 + warp * 0.6, 4) * 0.6 + gfbm(pd * 6000.0, 3) * 0.4;
+        // Mottle rather than shred: edges get structure, thick cloud only textures (never pits to the ground).
+        float edgeW = 1.0 - smoothstep(0.35, 0.75, c);
+        float texture = mix(0.8 + 0.4 * fine, clamp(0.45 + 1.1 * fine, 0.0, 1.4), edgeW);
+        float shaped = c * texture * mix(1.0, smoothstep(0.02, 0.25, c + (fine - 0.5) * 0.3), edgeW);
         c = clamp(mix(c, shaped, detailW), 0.0, 1.0);
     }
     return c;
@@ -658,6 +662,12 @@ void main() {
         float cloudDetail = 1.0 - smoothstep(600.0, 2500.0, footprintM);
         if (cloudDetail > 0.0 && clouds > 0.01)
             clouds = cloudAt(b, p, uv, east, north, cosLat, vec3(0.0), time, cloudDetail);
+        // Within a few thousand km the ray-marched cloud layer (cloudvol.frag) draws the clouds themselves;
+        // the flat deck fades out over the same distance (its shadows on the ground stay).
+        {
+            float altKm = (length(b.posRadius.xyz) - b.posRadius.w) * kKmPerParsecF;
+            clouds *= smoothstep(2500.0, 5000.0, altKm);
+        }
         // Volumetric tops (close range only): the deck is a height field, thick cloud towering up to
         // ~2.5 km over thin. Its slope tilts the lighting, taller cloud up-sun casts shadow across it,
         // the tops parallax against the ground with view angle, and thin edges catch a forward-scatter
@@ -668,7 +678,7 @@ void main() {
             const float topKm = 2.5;                                // tallest tops above the deck base
             float Rkm = b.posRadius.w * kKmPerParsecF;
             float hScale = topKm / Rkm;                             // height per unit cover, planet radii
-            float stepR = 4.0 / Rkm;                                // gradient/shadow step: 4 km
+            float stepR = 1.5 / Rkm;                                // gradient step: 1.5 km, inside the detail scale
             vec3 Vl = rotateInv(b.rotation, V);
             // Parallax: the top we see sits up-view of the ground point by height / tan(elevation).
             float sinV = max(dot(p, Vl), 0.12);
@@ -694,14 +704,15 @@ void main() {
                 float rise = (dKm / Rkm) * tanE;
                 block = max(block, smoothstep(0.0, 0.4 * hScale, cS * hScale - top - rise));
             }
-            float selfShadow = 1.0 - 0.55 * block;
-            cloudShade = mix(1.0, clamp(mix(0.75, 1.0, slopeLit) * selfShadow, 0.2, 1.3), volW);
+            float selfShadow = 1.0 - 0.65 * block;
+            cloudShade = mix(1.0, clamp(mix(0.42, 1.05, slopeLit) * selfShadow, 0.15, 1.2), volW);
             // Silver lining: thin edges lit from behind glow toward the camera (Sun ahead of us).
             float edge = smoothstep(0.02, 0.15, clouds) * (1.0 - smoothstep(0.15, 0.6, clouds));
             float forward = pow(max(dot(-V, L), 0.0), 6.0);
             cloudRim = edge * forward * 0.35 * volW;
         }
-        vec3 cloudCol = (vec3(1.0) * diffuse * cloudShade + vec3(0.06, 0.07, 0.09) * volW * max(dot(N, L), 0.0)) * irradiance;
+        // Cloud albedo ~0.85 with sky-blue fill in the shaded flanks, so towers read instead of clipping white.
+        vec3 cloudCol = (vec3(0.85) * diffuse * cloudShade + vec3(0.10, 0.13, 0.18) * volW * max(dot(N, L), 0.0)) * irradiance;
         color = mix(color, cloudCol, clouds * 0.9) + spec * irradiance + vec3(cloudRim) * irradiance * max(dot(N, L), 0.0);
         float night = smoothstep(0.05, -0.15, dot(N, L));
         // City lights: sodium-orange cores that bloom, from the Black Marble map with its glow pulled in

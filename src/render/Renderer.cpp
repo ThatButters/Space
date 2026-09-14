@@ -373,7 +373,7 @@ void Renderer::shutdown() {
     if (m_motionSetLayout) vkDestroyDescriptorSetLayout(dev, m_motionSetLayout, nullptr);
     m_dlss.shutdown();
     for (VkPipeline p : {m_skyPipeline, m_starPipeline, m_volumePipeline, m_planetPipeline, m_ringPipeline,
-                         m_bloomDownPipeline, m_bloomUpPipeline, m_linePipeline, m_dustPipeline, m_atmoPipeline,
+                         m_bloomDownPipeline, m_bloomUpPipeline, m_linePipeline, m_dustPipeline, m_atmoPipeline, m_cloudVolPipeline,
                          m_cloudPipeline, m_craftPipeline, m_shadowPipeline, m_glintPipeline, m_plumePipeline})
         vkDestroyPipeline(dev, p, nullptr);
     for (VkPipelineLayout l : {m_skyLayout, m_starLayout, m_volumeLayout, m_bodyLayout, m_bloomLayout, m_lineLayout,
@@ -778,6 +778,16 @@ void Renderer::createPipelines() {
     atmo.cullBack = false; // both faces: the fragment shader keeps the near faces outside, the far faces inside
     atmo.cullFront = false;
     m_atmoPipeline = gfx::createGraphicsPipeline(*m_ctx, atmo);
+
+    // Volumetric clouds: the same shell geometry, ray-marched in the fragment shader, body layout (maps).
+    gfx::GraphicsPipelineDesc cloudVol = planet;
+    cloudVol.fragmentShader = "cloudvol.frag.spv";
+    cloudVol.layout = m_bodyLayout;
+    cloudVol.blend = gfx::BlendMode::PremultipliedOver;
+    cloudVol.depthWrite = false;
+    cloudVol.cullBack = false;
+    cloudVol.cullFront = false;
+    m_cloudVolPipeline = gfx::createGraphicsPipeline(*m_ctx, cloudVol);
 
     m_craftLayout = gfx::createPipelineLayout(*m_ctx, {m_ssboBothSetLayout, m_textureSetLayout},
                                               sizeof(CraftPushConstants),
@@ -1342,6 +1352,15 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             vkCmdBindVertexBuffers(cmd, 0, 1, &m_sphereVB.buffer, &zero);
             vkCmdBindIndexBuffer(cmd, m_sphereIB.buffer, 0, VK_INDEX_TYPE_UINT32);
             const uint32_t spheres = std::min(scene.sphereCount, totalBodies);
+            vkCmdDrawIndexed(cmd, m_sphereIndexCount, spheres, 0, 0, 0);
+
+            // Earth's volumetric cloud layer: a shell just above the cloud tops (the fragment shader keeps
+            // Earth within a few thousand km and discards the rest).
+            bpc.params.z = 1.f + 7.0f / 6371.f;
+            bpc.params.w = 0.f;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_cloudVolPipeline);
+            vkCmdPushConstants(cmd, m_bodyLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               sizeof(bpc), &bpc);
             vkCmdDrawIndexed(cmd, m_sphereIndexCount, spheres, 0, 0, 0);
 
             // Atmosphere shells over the same instances (bodies without one collapse in the vertex shader).

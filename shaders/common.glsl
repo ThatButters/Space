@@ -40,6 +40,31 @@ float fbm(vec3 p, int octaves) {
     return sum / norm;
 }
 
+// Gradient (Perlin) noise with quintic fades: no lattice creases, unlike value noise, so it is what
+// cloud tops and other things seen up close are built from. Returns roughly -1..1.
+float gnoise3(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    #define G(o) dot(hash33(i + o) * 2.0 - 1.0, f - o)
+    return mix(mix(mix(G(vec3(0, 0, 0)), G(vec3(1, 0, 0)), u.x), mix(G(vec3(0, 1, 0)), G(vec3(1, 1, 0)), u.x), u.y),
+               mix(mix(G(vec3(0, 0, 1)), G(vec3(1, 0, 1)), u.x), mix(G(vec3(0, 1, 1)), G(vec3(1, 1, 1)), u.x), u.y), u.z);
+    #undef G
+}
+
+// fbm on gradient noise, rotated between octaves so nothing lines up with the lattice. 0..1.
+float gfbm(vec3 p, int octaves) {
+    const mat3 rot = mat3(0.00, 0.80, 0.60, -0.80, 0.36, -0.48, -0.60, -0.48, 0.64);
+    float sum = 0.0, amp = 0.5, norm = 0.0;
+    for (int i = 0; i < octaves; ++i) {
+        sum += amp * gnoise3(p);
+        norm += amp;
+        p = rot * p * 2.03 + vec3(11.7, 5.1, 3.3);
+        amp *= 0.5;
+    }
+    return 0.5 + 0.5 * sum / norm;
+}
+
 // Approximate blackbody colour (linear sRGB) for a star temperature in Kelvin.
 vec3 blackbody(float kelvin) {
     float t = clamp(kelvin, 1500.0, 40000.0) / 100.0;

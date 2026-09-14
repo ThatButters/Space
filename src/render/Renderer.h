@@ -311,6 +311,7 @@ private:
     VkPipeline m_planetPipeline = VK_NULL_HANDLE;
     VkPipeline m_ringPipeline = VK_NULL_HANDLE;
     VkPipeline m_atmoPipeline = VK_NULL_HANDLE;
+    VkPipeline m_cloudVolPipeline = VK_NULL_HANDLE; // Earth's volumetric cloud layer (body layout)
     VkPipelineLayout m_atmoLayout = VK_NULL_HANDLE;
 
     // Music nebula around the camera
