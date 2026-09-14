@@ -118,6 +118,16 @@ void Tour::visitPose(const SolarSystem& solar, glm::dvec3& pos, glm::quat& orien
     orient = glm::quatLookAt(look, glm::vec3(up));
 }
 
+void Tour::skip(int delta) {
+    if (!m_active || m_stops.empty()) return;
+    const size_t n = m_stops.size();
+    // m_next already points one past the current stop; step relative to that.
+    if (m_phase == Phase::Intro) m_next = delta > 0 ? 0 : n - 1;
+    else m_next = (m_next + n + (size_t)((delta > 0 ? 0 : -2) + n)) % n;
+    if (m_phase == Phase::FadeOut) return;
+    beginCut();
+}
+
 void Tour::beginCut() {
     m_phase = Phase::FadeOut;
     m_t = 0.0;

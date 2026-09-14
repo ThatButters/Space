@@ -52,6 +52,7 @@ struct Craft {
     double aAu = 0.4, ecc = 0.8, periodDays = 88.0;
 
     std::string blurb; // one line for the UI
+    std::string when;  // for things that are not there any more: the date shown in the caption
     bool listed = true; // false: scenery that belongs to another entry (e.g. the flag beside a lander)
     bool keepClock = false; // never move the clock to light this stop (a dawn launch stays at dawn)
 

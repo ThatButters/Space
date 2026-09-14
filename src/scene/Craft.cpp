@@ -102,19 +102,30 @@ void CraftCatalog::build(const SolarSystem& solar) {
 
     // --- Landing sites (selenographic / areographic coordinates) ---
     surface("Apollo 11 (Tranquility Base)", "apollo_lm.glb", 9.4f, "Moon", 0.674, 23.473, 0, "Eagle descent stage, July 1969");
+    m_crafts.back().when = "20 July 1969";
     surface("Apollo 12", "apollo_lm.glb", 9.4f, "Moon", -3.012, -23.422, 40, "Intrepid, Ocean of Storms, 1969");
+    m_crafts.back().when = "19 November 1969";
     surface("Apollo 14", "apollo_lm.glb", 9.4f, "Moon", -3.646, -17.472, 80, "Antares, Fra Mauro, 1971");
+    m_crafts.back().when = "5 February 1971";
     surface("Apollo 15", "apollo_lm.glb", 9.4f, "Moon", 26.132, 3.634, 120, "Falcon, Hadley Rille, 1971");
+    m_crafts.back().when = "30 July 1971";
     surface("Apollo 16", "apollo_lm.glb", 9.4f, "Moon", -8.973, 15.499, 160, "Orion, Descartes Highlands, 1972");
+    m_crafts.back().when = "21 April 1972";
     surface("Apollo 17", "apollo_lm.glb", 9.4f, "Moon", 20.191, 30.772, 200, "Challenger, Taurus-Littrow, 1972");
+    m_crafts.back().when = "11 December 1972";
     surface("Perseverance", "perseverance.glb", 3.0f, "Mars", 18.445, 77.451, 30, "Jezero crater, since 2021");
     surface("Ingenuity", "ingenuity.glb", 1.2f, "Mars", 18.44, 77.42, 0, "First aircraft on another world");
     surface("Viking 1", "viking.glb", 3.0f, "Mars", 22.27, -47.95, 0, "Chryse Planitia, 1976");
+    m_crafts.back().when = "20 July 1976";
     surface("Viking 2", "viking.glb", 3.0f, "Mars", 47.64, 134.29, 90, "Utopia Planitia, 1976");
+    m_crafts.back().when = "3 September 1976";
     surface("InSight", "insight.glb", 6.0f, "Mars", 4.502, 135.623, 0, "Elysium Planitia, 2018-2022");
+    m_crafts.back().when = "26 November 2018";
     surface("Huygens", "huygens.glb", 2.7f, "Titan", -10.3, 167.7, 0, "Landed on Titan, January 2005");
+    m_crafts.back().when = "14 January 2005";
     // A Saturn V two minutes into an Apollo launch, 9 km over the Atlantic off Kennedy, pitched downrange.
-    surface("Saturn V", "saturn_v.glb", 111.f, "Earth", 28.95, -79.65, 72, "Apollo launch, T+2:20: 60 km up, first stage still burning");
+    surface("Saturn V", "saturn_v.glb", 111.f, "Earth", 28.95, -79.65, 72, "Apollo 11 launch, T+2:20: 60 km up, first stage still burning");
+    m_crafts.back().when = "16 July 1969";
     m_crafts.back().altitudeKm = 60.0;
     m_crafts.back().modelPitchDeg = -58.f;
     m_crafts.back().keepClock = true;
@@ -153,7 +164,8 @@ void CraftCatalog::build(const SolarSystem& solar) {
     // --- Orbiters (radius = body radius + altitude) ---
     orbit("ISS", "iss.glb", 109.f, "Earth", 6371 + 420, 92.9, 51.6, 0, 0, "International Space Station, 420 km");
     orbit("Hubble", "hubble.glb", 13.2f, "Earth", 6371 + 535, 95.4, 28.5, 60, 90, "Hubble Space Telescope, 535 km");
-    orbit("Apollo-Soyuz", "apollo_soyuz.glb", 20.f, "Earth", 6371 + 222, 88.9, 51.8, 120, 40, "Apollo and Soyuz docked, July 1975");
+    orbit("Apollo-Soyuz", "apollo_soyuz.glb", 20.f, "Earth", 6371 + 222, 88.9, 51.8, 120, 40, "Apollo and Soyuz docked in orbit");
+    m_crafts.back().when = "17 July 1975";
     orbit("LRO", "lro.glb", 4.3f, "Moon", 1737 + 50, 113, 90, 0, 0, "Lunar Reconnaissance Orbiter, 50 km polar");
     m_crafts.back().sunFacingPlane = true;
     orbit("MRO", "mro.glb", 13.6f, "Mars", 3390 + 300, 112, 93, 0, 0, "Mars Reconnaissance Orbiter");
@@ -425,6 +437,11 @@ void CraftCatalog::viewpoint(const SolarSystem& solar, int index, double distanc
     glm::dvec3 dir;
     switch (c.placement) {
     case CraftPlacement::Surface:
+        if (c.altitudeKm > 1.0) {
+            // In flight: from above and off the sunlit flank, so the planet fills the view behind it.
+            dir = glm::normalize(up * 1.0 + side * 0.5 + sunFlat * 0.35);
+            break;
+        }
         // Cross-lit from low on the ground, like a crew photograph: the Sun off to one side so the
         // shadows stretch across the frame instead of hiding behind the lander.
         dir = glm::normalize(side * 0.8 + sunFlat * 0.2 + up * 0.6); // three-quarters from above
@@ -440,7 +457,7 @@ void CraftCatalog::viewpoint(const SolarSystem& solar, int index, double distanc
         // noon-midnight orbit) a hard sign would flip every frame and the camera would jump side to side.
         const double s = std::clamp(glm::dot(toSun, cross) * 8.0, -1.0, 1.0);
         const double sunSide = s + (1.0 - std::abs(s)); // -1 .. +1, preferring +1 when undecided
-        dir = glm::normalize(-along * 0.62 + cross * (0.55 * sunSide) + radial * 0.42);
+        dir = glm::normalize(-along * 0.5 + cross * (0.45 * sunSide) + radial * 0.85); // high enough that the planet is behind it
         break;
     }
     default:
@@ -453,9 +470,11 @@ void CraftCatalog::viewpoint(const SolarSystem& solar, int index, double distanc
 
 double CraftCatalog::viewDistanceSizes(int index) const {
     const double size = m_crafts[index].sizeMeters;
-    if (size >= 60.0) return 0.7; // the ISS: ~100 m from its centre, modules and arrays filling the frame
+    if (size >= 60.0) return 1.25; // the ISS from above: the whole station with the planet behind it
     if (size >= 15.0) return 2.0;
-    return m_crafts[index].placement == CraftPlacement::Surface ? 1.35 : 2.8; // landers: standing beside them
+    const Craft& c = m_crafts[index];
+    if (c.placement == CraftPlacement::Surface) return c.altitudeKm > 1.0 ? 2.6 : 1.35; // landers: beside them
+    return 2.8;
 }
 
 void CraftCatalog::orbitFrame(const SolarSystem& solar, int index, glm::dvec3& alongTrack, glm::dvec3& up) const {

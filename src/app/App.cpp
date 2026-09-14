@@ -591,7 +591,7 @@ void App::drawOverlay(double dt) {
 
     // Bottom right: the few controls that matter.
     {
-        const char* hint = m_tour.active() ? "T  leave the tour     right mouse  look around     F1  settings"
+        const char* hint = m_tour.active() ? "left / right  previous / next stop     T  leave the tour     right mouse  look around     F1  settings"
                                            : "T  tour     right mouse  look     W A S D  fly     scroll  speed     F1  settings";
         const float tw = width(font, smallPx, hint);
         text(font, smallPx, ImVec2(w - pad - tw, h - pad - smallPx), IM_COL32(200, 205, 220, 120), hint);
@@ -627,6 +627,7 @@ void App::drawOverlay(double dt) {
         if (tc >= 0) {
             name = m_crafts.crafts()[tc].name;
             blurb = m_crafts.crafts()[tc].blurb;
+            if (!m_crafts.crafts()[tc].when.empty()) blurb += "    -    " + m_crafts.crafts()[tc].when;
         } else if (tb >= 0 && m_tour.targetMode() == 1) {
             name = m_solar.body(tb).name + "'s rings";
             blurb = "ice from dust grains to houses, in a sheet ten metres thick";
@@ -826,6 +827,10 @@ int App::run() {
         if (m_input.keyPressed(GLFW_KEY_T) && m_useGaia && !ImGui::GetIO().WantTextInput) {
             if (m_tour.active()) m_tour.stop("T key");
             else m_tour.start(m_solar, m_camera);
+        }
+        if (m_tour.active() && !ImGui::GetIO().WantTextInput) {
+            if (m_input.keyPressed(GLFW_KEY_RIGHT)) m_tour.skip(1);
+            if (m_input.keyPressed(GLFW_KEY_LEFT)) m_tour.skip(-1);
         }
 
         const glm::dvec3 posBefore = m_camera.position;

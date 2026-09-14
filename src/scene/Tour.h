@@ -39,6 +39,8 @@ public:
     // The opening: a slow pass over the Gulf coast at dawn, then the stops in order.
     void startWithIntro(const SolarSystem& solar, int earth);
     void stop(const char* reason = "");
+    // Cut to the next (+1) or previous (-1) stop right now.
+    void skip(int delta);
     bool active() const { return m_active; }
 
     // Advances the tour and writes the camera. Call after the solar system has been updated this frame.
