@@ -1,0 +1,13 @@
+build/
+out/
+.vs/
+.vscode/
+.cache/
+*.spv
+vcpkg_installed/
+external/streamline/*
+!external/streamline/README.md
+assets/gaia/
+imgui.ini
+assets/textures/
+assets/models/

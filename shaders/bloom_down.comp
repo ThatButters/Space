@@ -1,0 +1,61 @@
+#version 460
+// Bloom downsample: 13-tap filter (Jimenez, "Next Generation Post Processing in Call of Duty").
+// Writes mip N from mip N-1 (or from the HDR target for the first level).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uSrc;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D uDst;
+
+layout(push_constant) uniform PushConstants {
+    vec4 params; // x: 1/srcWidth, y: 1/srcHeight, z: threshold-ish knee (first level only), w: first level flag
+} pc;
+
+// Partial Karis average to tame fireflies on the first downsample.
+vec3 karis(vec3 c) {
+    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    return c / (1.0 + luma);
+}
+
+void main() {
+    ivec2 dstSize = imageSize(uDst);
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= dstSize.x || gid.y >= dstSize.y) return;
+
+    vec2 texel = pc.params.xy;
+    vec2 uv = (vec2(gid) + 0.5) / vec2(dstSize);
+
+    vec3 a = texture(uSrc, uv + texel * vec2(-2, -2)).rgb;
+    vec3 b = texture(uSrc, uv + texel * vec2( 0, -2)).rgb;
+    vec3 c = texture(uSrc, uv + texel * vec2( 2, -2)).rgb;
+    vec3 d = texture(uSrc, uv + texel * vec2(-2,  0)).rgb;
+    vec3 e = texture(uSrc, uv).rgb;
+    vec3 f = texture(uSrc, uv + texel * vec2( 2,  0)).rgb;
+    vec3 g = texture(uSrc, uv + texel * vec2(-2,  2)).rgb;
+    vec3 h = texture(uSrc, uv + texel * vec2( 0,  2)).rgb;
+    vec3 i = texture(uSrc, uv + texel * vec2( 2,  2)).rgb;
+    vec3 j = texture(uSrc, uv + texel * vec2(-1, -1)).rgb;
+    vec3 k = texture(uSrc, uv + texel * vec2( 1, -1)).rgb;
+    vec3 l = texture(uSrc, uv + texel * vec2(-1,  1)).rgb;
+    vec3 m = texture(uSrc, uv + texel * vec2( 1,  1)).rgb;
+
+    vec3 result;
+    if (pc.params.w > 0.5) {
+        // Weighted groups with Karis average on each group.
+        vec3 g0 = karis((a + b + d + e) * 0.25);
+        vec3 g1 = karis((b + c + e + f) * 0.25);
+        vec3 g2 = karis((d + e + g + h) * 0.25);
+        vec3 g3 = karis((e + f + h + i) * 0.25);
+        vec3 g4 = karis((j + k + l + m) * 0.25);
+        result = g4 * 0.5 + (g0 + g1 + g2 + g3) * 0.125;
+        // Soft knee threshold: keep only the energy above the knee so dim nebulae stay crisp.
+        float luma = dot(result, vec3(0.2126, 0.7152, 0.0722));
+        float knee = pc.params.z;
+        float w = luma <= 0.0 ? 0.0 : smoothstep(0.0, knee, luma) * max(luma - knee * 0.5, 0.0) / max(luma, 1e-4);
+        result *= w;
+    } else {
+        result = e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;
+    }
+
+    imageStore(uDst, gid, vec4(result, 1.0));
+}

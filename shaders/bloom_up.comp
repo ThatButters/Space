@@ -1,0 +1,34 @@
+#version 460
+// Bloom upsample: 3x3 tent filter of mip N+1 added into mip N (progressive upsampling).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uSrc;                       // mip N+1
+layout(set = 0, binding = 1, rgba16f) uniform image2D uDst;                 // mip N (read + write)
+
+layout(push_constant) uniform PushConstants {
+    vec4 params; // x: 1/srcWidth, y: 1/srcHeight, z: radius scale, w: unused
+} pc;
+
+void main() {
+    ivec2 dstSize = imageSize(uDst);
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= dstSize.x || gid.y >= dstSize.y) return;
+
+    vec2 texel = pc.params.xy * pc.params.z;
+    vec2 uv = (vec2(gid) + 0.5) / vec2(dstSize);
+
+    vec3 sum = texture(uSrc, uv + texel * vec2(-1, -1)).rgb * 1.0
+             + texture(uSrc, uv + texel * vec2( 0, -1)).rgb * 2.0
+             + texture(uSrc, uv + texel * vec2( 1, -1)).rgb * 1.0
+             + texture(uSrc, uv + texel * vec2(-1,  0)).rgb * 2.0
+             + texture(uSrc, uv).rgb * 4.0
+             + texture(uSrc, uv + texel * vec2( 1,  0)).rgb * 2.0
+             + texture(uSrc, uv + texel * vec2(-1,  1)).rgb * 1.0
+             + texture(uSrc, uv + texel * vec2( 0,  1)).rgb * 2.0
+             + texture(uSrc, uv + texel * vec2( 1,  1)).rgb * 1.0;
+    vec3 blurred = sum / 16.0;
+
+    vec3 existing = imageLoad(uDst, gid).rgb;
+    imageStore(uDst, gid, vec4(existing + blurred, 1.0));
+}
