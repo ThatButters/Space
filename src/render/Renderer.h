@@ -23,6 +23,8 @@ class Context;
 }
 } // namespace space
 
+struct ImFont;
+
 namespace space::render {
 
 // Tunables surfaced in the debug UI.
@@ -46,6 +48,8 @@ struct RenderSettings {
     bool drawStars = true;
     bool drawBodies = true;
     bool vsync = true;
+    bool taa = true;            // temporal anti-aliasing
+    float sunGlare = 1.0f;      // glare strength around the Sun (0 = off)
 };
 
 // GPU layout of the per-frame shared block (shaders/frame.glsl).
@@ -64,6 +68,7 @@ struct FrameScene {
     uint32_t sphereCount = 0;
     glm::vec3 sunPosRel{0.f}; // camera-relative
     float sunRadiance = 1.f;
+    float sunRadius = 0.f;    // world units
     // Spacecraft instances (index = craft index) and which model each one uses.
     std::vector<CraftGpu> crafts;
     std::vector<int> craftModels; // model index per craft, -1 = skip
@@ -147,6 +152,11 @@ public:
     // Debug: on the next frame, read the HDR target and bloom mip 0 back and log channel statistics.
     void requestDiagnostic() { m_diagRequested = true; }
 
+    // UI fonts (Segoe UI when available): body text and a large display face for titles.
+    ImFont* uiFont() const { return m_uiFont; }
+    ImFont* titleFont() const { return m_titleFont; }
+    float uiScale() const { return m_uiScale; }
+
     static constexpr uint32_t kMaxBodies = 64;
 
 private:
@@ -199,6 +209,21 @@ private:
 
     gfx::Image m_hdr;
     gfx::Image m_depth;
+    // Post resolve (TAA + glare): output read by bloom and tonemap, history ping-pong.
+    gfx::Image m_post;
+    gfx::Image m_history[2];
+    int m_historyIndex = 0;
+    bool m_historyValid = false;
+    uint32_t m_frameSerial = 0;
+    glm::mat4 m_prevViewProj{1.f};
+    glm::dvec3 m_prevCamPos{0.0};
+    VkDescriptorSetLayout m_postSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool m_postPool = VK_NULL_HANDLE;
+    VkDescriptorSet m_postSets[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkPipelineLayout m_postLayout = VK_NULL_HANDLE;
+    VkPipeline m_postPipeline = VK_NULL_HANDLE;
+    void createPostResources();
+    void destroyPostResources();
     VkSampler m_linearSampler = VK_NULL_HANDLE;
 
     // Bloom mip chain (half res downward), all kept in GENERAL layout for compute access.
@@ -294,6 +319,9 @@ private:
     static constexpr uint32_t kDustCount = 7000;
     static constexpr uint32_t kMaxConstellations = 128;
 
+    ImFont* m_uiFont = nullptr;
+    ImFont* m_titleFont = nullptr;
+    float m_uiScale = 1.f;
     VkQueryPool m_timestampPool = VK_NULL_HANDLE;
     float m_gpuFrameMs = 0.f;
 

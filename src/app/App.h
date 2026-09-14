@@ -37,6 +37,8 @@ private:
     void updateConstellations(double dt);
     void drawConstellationUi();
     void drawLabels();
+    void drawOverlay(double dt);
+    std::string simDateString() const;
     void lookAt(const glm::vec3& dir);
     void goToBody(int index);
     void goToSurface(int index, double latDeg, double lonDeg, double altKm);
@@ -112,12 +114,16 @@ private:
     // --surface <Body> <lat> <lon> <altKm>: start above a surface point looking toward the horizon.
     bool m_startSurface = false;
     double m_startLat = 0.0, m_startLon = 0.0, m_startAltKm = 400.0;
-    bool m_startTour = false;
+    bool m_startTour = true; // the opening tour, unless a start place was given or --no-tour
+    bool m_windowed = false;
     std::vector<uint64_t> m_diagFrames;
     double m_diagTime = 0.0; // wall-clock seconds after start for a one-shot dump (0 = off)
     uint64_t m_frameCounter = 0;
 
-    bool m_showUi = true;
+    bool m_showUi = false; // F1: the settings panel
+    bool m_showOverlay = true;
+    double m_captionAge = 0.0;
+    int m_captionBody = -2, m_captionCraft = -2;
     float m_mouseSensitivity = 0.0022f;
     double m_smoothedFps = 0.0;
 };

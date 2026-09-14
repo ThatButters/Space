@@ -24,6 +24,15 @@ public:
     bool atCraft() const { return m_active && m_targetCraft >= 0; }
     bool inFlight() const { return m_active && m_phase == Phase::Flight; }
     void start(const SolarSystem& solar, const Camera& camera);
+    // The opening: a slow pass over Earth's dawn terminator at 650 km, then the stops in order.
+    void startWithIntro(const SolarSystem& solar, int earth);
+    bool introActive() const { return m_active && m_phase == Phase::Intro; }
+    double introProgress() const { return m_phase == Phase::Intro ? m_t / introSeconds : 1.0; }
+    bool visiting() const { return m_active && m_phase == Phase::Orbit; }
+    int targetBody() const { return m_active ? m_target : -1; }
+    int targetCraft() const { return m_active ? m_targetCraft : -1; }
+    // Seconds since the current leg began, so captions can fade in.
+    double legSeconds() const { return m_t; }
     void stop(const char* reason = "");
     bool active() const { return m_active; }
 
@@ -39,9 +48,10 @@ public:
     float orbitSeconds = 45.f;   // time spent circling each body
     float orbitRadii = 3.6f;     // distance from the body centre, in body radii
     float minFlightSeconds = 14.f, maxFlightSeconds = 40.f;
+    float introSeconds = 30.f;
 
 private:
-    enum class Phase { Flight, Orbit };
+    enum class Phase { Flight, Orbit, Intro };
     void beginFlight(const SolarSystem& solar, const Camera& camera);
     glm::dvec3 orbitOffset(const SolarSystem& solar, int body, double angle) const;
 

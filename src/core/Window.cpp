@@ -13,8 +13,20 @@ Window::Window(int width, int height, const std::string& title, Input& input) : 
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-    m_window = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
-    if (!m_window) throw std::runtime_error("glfwCreateWindow failed");
+    if (width <= 0 || height <= 0) {
+        // Borderless window covering the primary monitor (alt-tab friendly, HDR keeps working).
+        GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+        int mx = 0, my = 0;
+        glfwGetMonitorPos(monitor, &mx, &my);
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+        m_window = glfwCreateWindow(mode->width, mode->height, title.c_str(), nullptr, nullptr);
+        if (!m_window) throw std::runtime_error("glfwCreateWindow failed");
+        glfwSetWindowPos(m_window, mx, my);
+    } else {
+        m_window = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
+        if (!m_window) throw std::runtime_error("glfwCreateWindow failed");
+    }
 
     glfwSetWindowUserPointer(m_window, this);
     glfwSetFramebufferSizeCallback(m_window, [](GLFWwindow* w, int, int) {

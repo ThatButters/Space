@@ -6,6 +6,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -38,7 +39,7 @@ App::App(int argc, char** argv) {
     spdlog::set_level(spdlog::level::debug);
 #endif
     // Debug switches for isolating passes.
-    int width = 1600, height = 900;
+    int width = 0, height = 0; // 0 = borderless fullscreen
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--size" && i + 2 < argc) {
@@ -49,19 +50,23 @@ App::App(int argc, char** argv) {
         else if (a == "--no-volumetrics") m_settings.volumetrics = false;
         else if (a == "--no-bodies") m_settings.drawBodies = false;
         else if (a == "--no-bloom") m_settings.bloomStrength = 0.f;
-        else if (a == "--goto" && i + 1 < argc) m_startBody = argv[++i];
+        else if (a == "--goto" && i + 1 < argc) { m_startBody = argv[++i]; m_startTour = false; }
         else if (a == "--surface" && i + 4 < argc) {
             m_startBody = argv[++i];
             m_startLat = std::atof(argv[++i]);
             m_startLon = std::atof(argv[++i]);
             m_startAltKm = std::atof(argv[++i]);
             m_startSurface = true;
+            m_startTour = false;
         }
         else if (a == "--diag") m_diagFrames = {20, 450, 650};
         else if (a == "--diag-time" && i + 1 < argc) m_diagTime = std::atof(argv[++i]);
         else if (a == "--time-scale" && i + 1 < argc) m_timeScale = (float)std::atof(argv[++i]);
         else if (a == "--sdr") m_settings.hdrOutput = false;
         else if (a == "--tour") m_startTour = true;
+        else if (a == "--no-tour") m_startTour = false;
+        else if (a == "--ui") m_showUi = true;
+        else if (a == "--windowed") { if (width <= 0) { width = 1600; height = 900; } }
         else if (a == "--tour-pace" && i + 1 < argc) m_tourSpeed = (float)std::atof(argv[++i]);
         else LOG_WARN("Unknown argument {}", a);
     }
@@ -105,7 +110,7 @@ App::App(int argc, char** argv) {
             if (s.body >= 0 || s.craft >= 0) valid.push_back(s);
         m_tour.setStops(valid);
     }
-    if (m_startTour) m_tour.start(m_solar, m_camera);
+    if (m_startTour) m_tour.startWithIntro(m_solar, m_solar.find("Earth"));
     LOG_INFO("Ready. Hold right mouse to look, WASD/RF to fly, scroll to change speed, 0-9 visit bodies, F1 UI.");
 }
 
@@ -499,6 +504,156 @@ void App::drawLabels() {
     }
 }
 
+std::string App::simDateString() const {
+    // Julian date -> calendar (Meeus), UTC.
+    double jd = m_epochJd + m_simDays + 0.5;
+    const long Z = (long)std::floor(jd);
+    const double F = jd - Z;
+    long A = Z;
+    if (Z >= 2299161) {
+        const long alpha = (long)std::floor((Z - 1867216.25) / 36524.25);
+        A = Z + 1 + alpha - alpha / 4;
+    }
+    const long B = A + 1524, C = (long)std::floor((B - 122.1) / 365.25), D = (long)std::floor(365.25 * C);
+    const long E = (long)std::floor((B - D) / 30.6001);
+    const double day = B - D - std::floor(30.6001 * E) + F;
+    const int month = (int)(E < 14 ? E - 1 : E - 13);
+    const long year = month > 2 ? C - 4716 : C - 4715;
+    const int d = (int)day;
+    const double hours = (day - d) * 24.0;
+    const int h = (int)hours, m = (int)((hours - h) * 60.0);
+    static const char* names[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%d %s %ld  %02d:%02d UTC", d, names[std::clamp(month - 1, 0, 11)], year, h, m);
+    return buf;
+}
+
+void App::drawOverlay(double dt) {
+    int w = 0, h = 0;
+    m_window->framebufferSize(w, h);
+    if (w == 0 || h == 0 || !m_useGaia) return;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = m_renderer.uiFont();
+    ImFont* title = m_renderer.titleFont();
+    const float scale = m_renderer.uiScale();
+    const float pad = 28.f * scale;
+    auto text = [&](ImFont* f, float size, ImVec2 pos, ImU32 col, const char* str) {
+        dl->AddText(f, size, ImVec2(pos.x + 1.5f, pos.y + 1.5f), IM_COL32(0, 0, 0, (col >> 24) * 3 / 4), str);
+        dl->AddText(f, size, pos, col, str);
+    };
+    auto width = [&](ImFont* f, float size, const char* str) { return f->CalcTextSizeA(size, FLT_MAX, 0.f, str).x; };
+    const float bodyPx = 19.f * scale, smallPx = 15.f * scale, bigPx = 30.f * scale;
+
+    // Top left: where we are and when.
+    int nearest = -1;
+    double best = 1e300;
+    for (size_t i = 0; i < m_solar.bodies().size(); ++i) {
+        const Body& b = m_solar.body((int)i);
+        const double d = glm::length(b.position - m_camera.position) - b.radiusKm / kKmPerParsec;
+        if (d < best) { best = d; nearest = (int)i; }
+    }
+    if (nearest >= 0 && !m_showUi) {
+        char line[128];
+        std::snprintf(line, sizeof line, "%s   %s", m_solar.body(nearest).name.c_str(), formatDistance(std::max(best, 0.0)).c_str());
+        text(font, bigPx, ImVec2(pad, pad), IM_COL32(240, 240, 250, 220), line);
+        text(font, smallPx, ImVec2(pad, pad + bigPx + 4.f * scale), IM_COL32(200, 205, 220, 160), simDateString().c_str());
+    }
+
+    // Bottom right: the few controls that matter.
+    {
+        const char* hint = m_tour.active() ? "T  leave the tour     right mouse  look around     F1  settings"
+                                           : "T  tour     right mouse  look     W A S D  fly     scroll  speed     F1  settings";
+        const float tw = width(font, smallPx, hint);
+        text(font, smallPx, ImVec2(w - pad - tw, h - pad - smallPx), IM_COL32(200, 205, 220, 120), hint);
+    }
+
+    // Title over the opening.
+    if (m_tour.introActive()) {
+        const double p = m_tour.introProgress();
+        const float a = (float)std::clamp(std::min((p - 0.08) / 0.15, (0.85 - p) / 0.15), 0.0, 1.0);
+        if (a > 0.f) {
+            const float titlePx = 64.f * scale, subPx = 20.f * scale;
+            const char* t1 = "SPACE";
+            const char* t2 = "the solar system, as it is tonight";
+            const float w1 = width(title, titlePx, t1), w2 = width(font, subPx, t2);
+            text(title, titlePx, ImVec2((w - w1) * 0.5f, h * 0.30f), IM_COL32(255, 255, 255, (int)(a * 235)), t1);
+            text(font, subPx, ImVec2((w - w2) * 0.5f, h * 0.30f + titlePx + 6.f * scale), IM_COL32(220, 225, 240, (int)(a * 200)), t2);
+        }
+    }
+
+    // Caption: what the tour is showing (name, one line), fading in at each stop.
+    if (m_tour.active() && !m_tour.introActive()) {
+        const int tb = m_tour.targetBody(), tc = m_tour.targetCraft();
+        if (tb != m_captionBody || tc != m_captionCraft) { m_captionBody = tb; m_captionCraft = tc; m_captionAge = 0.0; }
+        m_captionAge += dt;
+        std::string name, blurb;
+        if (tc >= 0) {
+            name = m_crafts.crafts()[tc].name;
+            blurb = m_crafts.crafts()[tc].blurb;
+        } else if (tb >= 0) {
+            name = m_solar.body(tb).name;
+            static const std::unordered_map<std::string, std::string> blurbs = {
+                {"Sun", "our star, 150 million km from home"}, {"Mercury", "closest to the Sun: 430 C by day, -180 C by night"},
+                {"Venus", "wrapped in clouds of sulphuric acid"}, {"Earth", "home"},
+                {"Moon", "384,000 km out, always showing the same face"}, {"Mars", "the red planet, half the size of Earth"},
+                {"Jupiter", "eleven Earths across, with a storm older than the telescope"},
+                {"Io", "the most volcanic world in the solar system"}, {"Europa", "an ocean under the ice"},
+                {"Saturn", "rings of ice, ten metres thick and 280,000 km wide"},
+                {"Titan", "a moon with rivers and seas of methane"}, {"Uranus", "tipped on its side, rolling around the Sun"},
+                {"Neptune", "the windiest world: 2,000 km/h"}, {"Ganymede", "the largest moon, bigger than Mercury"},
+                {"Callisto", "the most heavily cratered surface known"}, {"Triton", "captured, and orbiting backwards"},
+                {"Rhea", "Saturn's second-largest moon"}, {"Phobos", "a captured asteroid, spiralling in"}, {"Deimos", "twelve kilometres of rock"}};
+            auto it = blurbs.find(name);
+            if (it != blurbs.end()) blurb = it->second;
+        }
+        if (!name.empty()) {
+            const bool flight = !m_tour.visiting();
+            const float a = (float)std::clamp(m_captionAge / 1.2, 0.0, 1.0) * (flight ? 0.55f : 1.f);
+            const std::string head = flight ? "next:  " + name : name;
+            const float hw = width(font, bodyPx, head.c_str());
+            const float y = h - pad - smallPx - 14.f * scale - bodyPx - (flight ? 0.f : smallPx + 4.f * scale);
+            text(font, bodyPx, ImVec2((w - hw) * 0.5f, y), IM_COL32(255, 255, 255, (int)(a * 230)), head.c_str());
+            if (!flight && !blurb.empty()) {
+                const float bw = width(font, smallPx, blurb.c_str());
+                text(font, smallPx, ImVec2((w - bw) * 0.5f, y + bodyPx + 4.f * scale), IM_COL32(215, 220, 235, (int)(a * 190)), blurb.c_str());
+            }
+        }
+    }
+
+    // Hover: the planet, moon or spacecraft under the cursor.
+    ImGuiIO& io = ImGui::GetIO();
+    if (!io.WantCaptureMouse && !m_window->cursorCaptured() && io.MousePos.x >= 0.f) {
+        const glm::mat4 vp = render::makeViewProj(m_renderCamera, (float)w / (float)h);
+        const glm::vec2 mouse(io.MousePos.x, io.MousePos.y);
+        float bestPx = 26.f * scale;
+        std::string label, sub;
+        auto consider = [&](const glm::dvec3& pos, double radiusPc, const std::string& n, const std::string& detail) {
+            const glm::vec3 rel = glm::vec3(pos - m_camera.position);
+            const glm::vec4 c = vp * glm::vec4(rel, 1.f);
+            if (c.w <= 0.f) return;
+            const glm::vec2 sp((c.x / c.w * 0.5f + 0.5f) * w, (c.y / c.w * 0.5f + 0.5f) * h);
+            const float onScreenR = (float)(radiusPc / std::max(glm::length(glm::dvec3(rel)), 1e-30) / (2.0 * std::tan(m_camera.fovY * 0.5) / h));
+            const float d = std::max(glm::length(mouse - sp) - onScreenR, 0.f);
+            if (d < bestPx) { bestPx = d; label = n; sub = detail; }
+        };
+        for (size_t i = 0; i < m_solar.bodies().size(); ++i) {
+            const Body& b = m_solar.body((int)i);
+            const double dist = glm::length(b.position - m_camera.position) - b.radiusKm / kKmPerParsec;
+            consider(b.position, b.radiusKm / kKmPerParsec, b.name, formatDistance(std::max(dist, 0.0)) + " away");
+        }
+        for (const Craft& c : m_crafts.crafts()) {
+            if (c.modelIndex < 0 || !c.listed) continue;
+            const double dist = glm::length(c.position - m_camera.position);
+            consider(c.position, c.sizeMeters / (kKmPerParsec * 1000.0), c.name, c.blurb + "   " + formatDistance(dist) + " away");
+        }
+        if (!label.empty()) {
+            const ImVec2 pos(io.MousePos.x + 16.f * scale, io.MousePos.y + 12.f * scale);
+            text(font, bodyPx, pos, IM_COL32(255, 250, 235, 235), label.c_str());
+            text(font, smallPx, ImVec2(pos.x, pos.y + bodyPx + 2.f * scale), IM_COL32(220, 220, 230, 180), sub.c_str());
+        }
+    }
+}
+
 void App::goToSurface(int index, double latDeg, double lonDeg, double altKm) {
     const Body& b = m_solar.body(index);
     const double lat = glm::radians(latDeg), lon = glm::radians(lonDeg);
@@ -565,6 +720,7 @@ int App::run() {
         m_renderer.beginFrame();
         if (m_showUi) drawUi(dt);
         drawLabels();
+        if (m_showOverlay) drawOverlay(dt);
         m_renderer.endFrame(m_renderCamera, now, m_effective, m_frameScene);
     }
     return 0;
@@ -651,6 +807,7 @@ void App::updateScene(double dt) {
     if (m_useGaia) {
         m_frameScene.sphereCount = m_solar.buildGpuList(m_camera.position, m_frameScene.bodies);
         m_frameScene.sunPosRel = glm::vec3(m_solar.sunPosition() - m_camera.position);
+        m_frameScene.sunRadius = (float)(m_solar.body(0).radiusKm / kKmPerParsec);
         if (m_showCraft) {
             std::vector<float> extents;
             m_crafts.buildGpuList(m_solar, m_camera.position, m_frameScene.crafts, extents);
@@ -1066,6 +1223,8 @@ void App::drawUi(double dt) {
     }
     ImGui::Separator();
 
+    ImGui::Checkbox("temporal anti-aliasing", &m_settings.taa);
+    ImGui::SliderFloat("sun glare", &m_settings.sunGlare, 0.f, 3.f);
     ImGui::SliderFloat("exposure", &m_settings.exposure, 0.05f, 8.f, "%.2f", ImGuiSliderFlags_Logarithmic);
     ImGui::SliderFloat("bloom", &m_settings.bloomStrength, 0.f, 2.f);
     ImGui::SliderFloat("bloom knee", &m_settings.bloomKnee, 0.f, 4.f);

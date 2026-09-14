@@ -84,6 +84,16 @@ struct BodyPushConstants {
 };
 static_assert(sizeof(BodyPushConstants) == 256);
 
+struct PostPushConstants {
+    glm::mat4 prevViewProj, viewProj;
+    glm::vec4 camRight, camUp, camForward;
+    glm::vec4 params;   // tanHalf, aspect, near, history blend
+    glm::vec4 camDelta;
+    glm::vec4 sun;      // camera-relative Sun, radius
+    glm::vec4 glare;    // strength, jitter u, jitter v
+};
+static_assert(sizeof(PostPushConstants) == 240);
+
 struct GlintPushConstants {
     glm::mat4 viewProj;
     glm::vec4 params; // viewport w, h, radians per pixel, visibility floor
@@ -350,6 +360,9 @@ void Renderer::shutdown() {
 
     destroySwapchainFormatDependent();
 
+    if (m_postPipeline) vkDestroyPipeline(dev, m_postPipeline, nullptr);
+    if (m_postLayout) vkDestroyPipelineLayout(dev, m_postLayout, nullptr);
+    if (m_postSetLayout) vkDestroyDescriptorSetLayout(dev, m_postSetLayout, nullptr);
     for (VkPipeline p : {m_skyPipeline, m_starPipeline, m_volumePipeline, m_planetPipeline, m_ringPipeline,
                          m_bloomDownPipeline, m_bloomUpPipeline, m_linePipeline, m_dustPipeline, m_atmoPipeline,
                          m_cloudPipeline, m_craftPipeline, m_shadowPipeline, m_glintPipeline})
@@ -410,14 +423,16 @@ void Renderer::createSwapchainDependent() {
     m_hdr.create(*m_ctx, ext.width, ext.height, kHdrFormat,
                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-    m_depth.create(*m_ctx, ext.width, ext.height, kDepthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                   VK_IMAGE_ASPECT_DEPTH_BIT);
+    m_depth.create(*m_ctx, ext.width, ext.height, kDepthFormat,
+                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    createPostResources();
     createBloomChain();
     updateTonemapDescriptor();
 }
 
 void Renderer::destroySwapchainDependent() {
     destroyBloomChain();
+    destroyPostResources();
     m_depth.destroy(*m_ctx);
     m_hdr.destroy(*m_ctx);
     for (auto s : m_renderFinished) vkDestroySemaphore(m_ctx->device(), s, nullptr);
@@ -444,7 +459,7 @@ void Renderer::recreateSwapchain() {
 }
 
 void Renderer::updateTonemapDescriptor() {
-    VkDescriptorImageInfo hdr{m_linearSampler, m_hdr.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo hdr{m_linearSampler, m_post.view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo bloom{m_linearSampler, m_bloomMips[0].image.view, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet writes[2]{};
     for (auto& w : writes) {
@@ -507,8 +522,8 @@ void Renderer::createBloomChain() {
     for (uint32_t i = 0; i < n; ++i) {
         m_bloomMips[i].downSet = sets[i * 2];
         m_bloomMips[i].upSet = sets[i * 2 + 1];
-        VkImageView srcDown = i == 0 ? m_hdr.view : m_bloomMips[i - 1].image.view;
-        VkImageLayout srcDownLayout = i == 0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+        VkImageView srcDown = i == 0 ? m_post.view : m_bloomMips[i - 1].image.view;
+        VkImageLayout srcDownLayout = VK_IMAGE_LAYOUT_GENERAL;
         write(m_bloomMips[i].downSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, srcDown, srcDownLayout);
         write(m_bloomMips[i].downSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, m_bloomMips[i].image.view,
               VK_IMAGE_LAYOUT_GENERAL);
@@ -528,6 +543,76 @@ void Renderer::createBloomChain() {
                              VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     m_ctx->endOneShot(cmd);
+}
+
+void Renderer::createPostResources() {
+    VkDevice dev = m_ctx->device();
+    const VkExtent2D ext = m_swapchain.extent();
+    const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    m_post.create(*m_ctx, ext.width, ext.height, kHdrFormat, usage);
+    for (auto& h : m_history) h.create(*m_ctx, ext.width, ext.height, kHdrFormat, usage);
+    {
+        VkCommandBuffer cmd = m_ctx->beginOneShot();
+        for (gfx::Image* img : {&m_post, &m_history[0], &m_history[1]})
+            gfx::transitionImage(cmd, img->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        m_ctx->endOneShot(cmd);
+    }
+    m_historyValid = false;
+
+    if (!m_postSetLayout) {
+        VkDescriptorSetLayoutBinding b[5] = {
+            {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        ci.bindingCount = 5;
+        ci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(dev, &ci, nullptr, &m_postSetLayout));
+        m_postLayout = gfx::createPipelineLayout(*m_ctx, {m_postSetLayout}, sizeof(PostPushConstants),
+                                                 VK_SHADER_STAGE_COMPUTE_BIT);
+        m_postPipeline = gfx::createComputePipeline(*m_ctx, "post.comp.spv", m_postLayout);
+    }
+    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}};
+    VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    dpi.maxSets = 2;
+    dpi.poolSizeCount = 2;
+    dpi.pPoolSizes = sizes;
+    VK_CHECK(vkCreateDescriptorPool(dev, &dpi, nullptr, &m_postPool));
+    VkDescriptorSetLayout layouts[2] = {m_postSetLayout, m_postSetLayout};
+    VkDescriptorSetAllocateInfo dsa{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    dsa.descriptorPool = m_postPool;
+    dsa.descriptorSetCount = 2;
+    dsa.pSetLayouts = layouts;
+    VK_CHECK(vkAllocateDescriptorSets(dev, &dsa, m_postSets));
+    for (int i = 0; i < 2; ++i) {
+        VkDescriptorImageInfo infos[5] = {
+            {m_linearSampler, m_hdr.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {m_shadowSampler, m_depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {m_linearSampler, m_history[1 - i].view, VK_IMAGE_LAYOUT_GENERAL},
+            {VK_NULL_HANDLE, m_post.view, VK_IMAGE_LAYOUT_GENERAL},
+            {VK_NULL_HANDLE, m_history[i].view, VK_IMAGE_LAYOUT_GENERAL}};
+        VkWriteDescriptorSet writes[5];
+        for (int k = 0; k < 5; ++k) {
+            writes[k] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[k].dstSet = m_postSets[i];
+            writes[k].dstBinding = k;
+            writes[k].descriptorCount = 1;
+            writes[k].descriptorType = k < 3 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            writes[k].pImageInfo = &infos[k];
+        }
+        vkUpdateDescriptorSets(dev, 5, writes, 0, nullptr);
+    }
+}
+
+void Renderer::destroyPostResources() {
+    if (m_postPool) vkDestroyDescriptorPool(m_ctx->device(), m_postPool, nullptr);
+    m_postPool = VK_NULL_HANDLE;
+    m_post.destroy(*m_ctx);
+    for (auto& h : m_history) h.destroy(*m_ctx);
 }
 
 void Renderer::destroyBloomChain() {
@@ -845,6 +930,21 @@ void Renderer::initImGui() {
     ImGui::StyleColorsDark();
     ImGui::GetStyle().WindowRounding = 6.f;
     ImGui::GetStyle().Colors[ImGuiCol_WindowBg].w = 0.75f;
+    {
+        int fbw = 0, fbh = 0;
+        m_window->framebufferSize(fbw, fbh);
+        m_uiScale = std::clamp(fbh / 1080.f, 0.8f, 2.5f);
+        const char* body = "C:/Windows/Fonts/segoeui.ttf";
+        const char* title = "C:/Windows/Fonts/segoeuil.ttf"; // Segoe UI Light
+        if (std::filesystem::exists(body)) {
+            m_uiFont = io.Fonts->AddFontFromFileTTF(body, 19.f * m_uiScale);
+            m_titleFont = io.Fonts->AddFontFromFileTTF(std::filesystem::exists(title) ? title : body, 64.f * m_uiScale);
+        }
+        if (!m_uiFont) m_uiFont = io.Fonts->AddFontDefault();
+        if (!m_titleFont) m_titleFont = m_uiFont;
+        io.FontDefault = m_uiFont;
+        ImGui::GetStyle().ScaleAllSizes(m_uiScale);
+    }
 
     ImGui_ImplGlfw_InitForVulkan(m_window->handle(), true);
 
@@ -1031,7 +1131,20 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
     view.camPos = glm::vec4(glm::vec3(camera.position), 0.f);
     view.params = glm::vec4(tanHalf, aspect, (float)time, 2.f * tanHalf / (float)ext.height);
 
-    const glm::mat4 viewProj = makeViewProj(camera, aspect);
+    const glm::mat4 viewProjClean = makeViewProj(camera, aspect);
+    // TAA: a Halton (2,3) sub-pixel jitter on the projection; the post pass samples it back to centre.
+    glm::vec2 jitterPx(0.f);
+    if (settings.taa) {
+        auto halton = [](uint32_t i, uint32_t b) {
+            float f = 1.f, r = 0.f;
+            while (i > 0) { f /= (float)b; r += f * (float)(i % b); i /= b; }
+            return r;
+        };
+        const uint32_t k = (m_frameSerial % 8) + 1;
+        jitterPx = glm::vec2(halton(k, 2) - 0.5f, halton(k, 3) - 0.5f);
+    }
+    const glm::vec2 jitterNdc = jitterPx * glm::vec2(2.f / ext.width, 2.f / ext.height);
+    const glm::mat4 viewProj = glm::translate(glm::mat4(1.f), glm::vec3(jitterNdc, 0.f)) * viewProjClean;
 
     if (scene.shadowEnabled && !scene.shadowCasters.empty() && settings.drawBodies) recordShadowPass(cmd, scene);
     const glm::vec4 shadowInfo(scene.shadowEnabled ? (float)m_shadowTextureIndex : -1.f, 1.f / (float)kShadowSize,
@@ -1244,12 +1357,50 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
         vkCmdEndRendering(cmd);
     }
 
-    // ---- Bloom (compute) --------------------------------------------------------------------
+    // ---- Post resolve: TAA + Sun glare (compute) -------------------------------------------
     gfx::transitionImage(cmd, m_hdr.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                          VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    gfx::transitionImage(cmd, m_depth.image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    {
+        // Previous frame: bloom + tonemap read m_post, the post pass read the other history buffer.
+        for (gfx::Image* img : {&m_post, &m_history[0], &m_history[1]})
+            gfx::transitionImage(cmd, img->image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        PostPushConstants ppc{};
+        ppc.prevViewProj = m_historyValid ? m_prevViewProj : viewProjClean;
+        ppc.viewProj = viewProjClean;
+        ppc.camRight = glm::vec4(r, 0.f);
+        ppc.camUp = glm::vec4(u, 0.f);
+        ppc.camForward = glm::vec4(f, 0.f);
+        ppc.params = glm::vec4(tanHalf, aspect, kNearPlane, settings.taa && m_historyValid ? 0.9f : 0.f);
+        ppc.camDelta = glm::vec4(glm::vec3(camera.position - m_prevCamPos), 0.f);
+        ppc.sun = glm::vec4(scene.sunPosRel, scene.sunRadius);
+        ppc.glare = glm::vec4(settings.sunGlare * 0.6f, -jitterNdc.x * 0.5f, -jitterNdc.y * 0.5f, 0.f);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_postPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_postLayout, 0, 1, &m_postSets[m_historyIndex], 0, nullptr);
+        vkCmdPushConstants(cmd, m_postLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ppc), &ppc);
+        vkCmdDispatch(cmd, (ext.width + 7) / 8, (ext.height + 7) / 8, 1);
+        gfx::transitionImage(cmd, m_post.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        m_historyIndex = 1 - m_historyIndex;
+        m_historyValid = settings.taa;
+        m_prevViewProj = viewProjClean;
+        m_prevCamPos = camera.position;
+        ++m_frameSerial;
+    }
+
+    // ---- Bloom (compute) --------------------------------------------------------------------
     recordBloom(cmd, settings);
     m_diagThisFrame = m_diagRequested;
     if (m_diagThisFrame) {

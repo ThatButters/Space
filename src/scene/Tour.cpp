@@ -147,9 +147,46 @@ bool Tour::clockOverride(double& jd) const {
     return true;
 }
 
+void Tour::startWithIntro(const SolarSystem& solar, int earth) {
+    if (m_stops.empty() || earth < 0) return;
+    LOG_INFO("Tour started (intro)");
+    m_active = true;
+    m_next = 0;
+    m_phase = Phase::Intro;
+    m_target = earth;
+    m_targetCraft = -1;
+    m_t = 0.0;
+    m_clockActive = false;
+    (void)solar;
+}
+
 void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float speedScale) {
     if (!m_active || m_target < 0) return;
     dt *= std::max(speedScale, 0.f);
+
+    if (m_phase == Phase::Intro) {
+        // Over the northern mid-latitudes just past the dawn terminator, drifting sunward like an orbiter,
+        // looking along the limb toward the coming sunrise with the aurora below.
+        m_t += dt;
+        const Body& e = solar.body(m_target);
+        const double R = e.radiusKm / kKmPerParsec;
+        const glm::dvec3 s = glm::normalize(solar.sunPosition() - e.position);
+        glm::dvec3 n = glm::normalize(glm::dvec3(e.rotation * glm::vec3(0.f, 1.f, 0.f)));
+        n = glm::normalize(n - s * glm::dot(n, s));
+        const glm::dvec3 east = glm::normalize(glm::cross(n, s));
+        const glm::dvec3 w = glm::normalize(n * 0.75 - east * 0.66); // ~48 N on the morning side
+        const double k = smooth(m_t / introSeconds);
+        const double theta = glm::radians(104.0 - 16.0 * k);
+        const glm::dvec3 dir = s * std::cos(theta) + w * std::sin(theta);
+        camera.position = e.position + dir * (R + 650.0 / kKmPerParsec);
+        glm::dvec3 t = glm::normalize(s - dir * glm::dot(s, dir));
+        const glm::vec3 fwd = glm::normalize(glm::vec3(t - dir * 0.42));
+        const glm::quat want = glm::quatLookAt(fwd, glm::vec3(dir));
+        camera.orientation = m_t < 0.05 ? want : glm::slerp(camera.orientation, want, (float)std::min(1.0, dt * 3.0));
+        camera.speed = R * 0.02;
+        if (m_t >= introSeconds) beginFlight(solar, camera);
+        return;
+    }
 
     if (m_targetCraft >= 0 && m_crafts) {
         // Spacecraft stop: fly to a viewpoint a few sizes away, then hold there while it drifts.
