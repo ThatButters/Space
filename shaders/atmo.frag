@@ -175,8 +175,8 @@ void main() {
             auroraLight += exp(-betaR * odView) * aurora(pl, sl, h, pc.params.x, pc.params.w) * ds * night;
             // Airglow: the faint green oxygen layer near 90 km that rims the night limb in photos from orbit.
             float kmA = h * 6371.0;
-            float glow = exp(-pow((kmA - 92.0) / 9.0, 2.0)) * (shadowed ? 1.0 : 0.15);
-            auroraLight += exp(-betaR * odView) * vec3(0.18, 0.55, 0.28) * glow * ds * 0.012;
+            float glow = exp(-pow((kmA - 92.0) / 16.0, 2.0)) * (shadowed ? 1.0 : 0.15); // wide enough not to band
+            auroraLight += exp(-betaR * odView) * vec3(0.18, 0.55, 0.28) * glow * ds * 0.005;
         }
     }
 

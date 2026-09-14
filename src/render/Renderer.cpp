@@ -1354,7 +1354,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
                                sizeof(bpc), &bpc);
             vkCmdDrawIndexed(cmd, m_sphereIndexCount, spheres, 0, 0, 0);
             bpc.params.z = 0.f;
-            bpc.params.w = 0.f;
+            bpc.params.w = 2.f * tanHalf / (float)rext.height; // radians per pixel: unresolved bodies keep a minimum size
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bodyLayout, 0, 2, bodySets, 0, nullptr);
             vkCmdPushConstants(cmd, m_bodyLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                sizeof(bpc), &bpc);

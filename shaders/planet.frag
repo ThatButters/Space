@@ -42,6 +42,7 @@ layout(location = 1) in vec3 vLocal;
 layout(location = 2) in vec3 vNormal;
 layout(location = 3) flat in int vBody;
 layout(location = 4) in float vRadial;
+layout(location = 5) flat in float vBoost;
 layout(location = 0) out vec4 outColor;
 
 const int SUN = 0, ROCKY = 1, EARTH = 2, GAS = 3, ICE = 4, RING = 5;
@@ -406,7 +407,7 @@ void main() {
     // vWorldPos lies on the proxy along this pixel's view ray, so its direction is the ray.
     vec3 rd = normalize(vWorldPos);
     dvec3 C = dvec3(b.posRadius.xyz);
-    double R = double(b.posRadius.w);
+    double R = double(b.posRadius.w) * double(vBoost); // enlarged when unresolved (see planet.vert)
     dvec3 D = dvec3(rd);
     double bq = dot(C, D);
     double cq = dot(C, C) - R * R;
@@ -503,7 +504,7 @@ void main() {
         float limb = 0.45 + 0.55 * pow(mu, 0.6);
         vec3 surf = hasDay ? sampleDay(b, uv).rgb * (0.8 + 0.4 * fbm(p * 40.0 + time * 0.03, 3))
                            : sunSurface(p, seed, time);
-        outColor = vec4(b.color.rgb * surf * limb * pc.params.y, 1.0);
+        outColor = vec4(b.color.rgb * surf * limb * pc.params.y / (vBoost * vBoost), 1.0);
         return;
     }
 
@@ -703,9 +704,11 @@ void main() {
         vec3 cloudCol = (vec3(1.0) * diffuse * cloudShade + vec3(0.06, 0.07, 0.09) * volW * max(dot(N, L), 0.0)) * irradiance;
         color = mix(color, cloudCol, clouds * 0.9) + spec * irradiance + vec3(cloudRim) * irradiance * max(dot(N, L), 0.0);
         float night = smoothstep(0.05, -0.15, dot(N, L));
-        vec3 lights = b.tex.y >= 0 ? sampleMap(b.tex.y, uv).rgb * vec3(1.0, 0.9, 0.75)
+        // City lights: sodium-orange cores that bloom, from the Black Marble map with its glow pulled in
+        // (a contrast curve) so towns read as points and cities as networks, dimmed under cloud.
+        vec3 lights = b.tex.y >= 0 ? pow(sampleMap(b.tex.y, uv).rgb, vec3(1.6)) * vec3(1.0, 0.72, 0.42)
                                    : vec3(1.0, 0.75, 0.45) * smoothstep(0.62, 0.8, fbm(p * 14.0 + seed, 4)) * (1.0 - ocean);
-        color += lights * night * (1.0 - clouds * 0.8) * 0.05;
+        color += lights * night * (1.0 - clouds * 0.7) * 1.4;
         // Lightning: a few storm cells under the thickest night-side cloud, each flashing for a fraction of
         // a second every several seconds and lighting the cloud top from below.
         if (night > 0.01 && clouds > 0.5) {
@@ -738,5 +741,7 @@ void main() {
     float dayside = clamp(dot(N, L) * 0.5 + 0.5, 0.0, 1.0);
     color += atmoCol * fres * b.params.z * irradiance * (0.15 + 0.85 * dayside) * 0.15;
 
+    // Unresolved body drawn larger than life: same total light, spread over the larger disc.
+    color /= vBoost * vBoost;
     outColor = vec4(color, 1.0);
 }
