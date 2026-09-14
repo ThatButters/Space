@@ -560,6 +560,9 @@ void App::drawOverlay(double dt) {
     m_window->framebufferSize(w, h);
     if (w == 0 || h == 0 || !m_useGaia) return;
     ImDrawList* dl = ImGui::GetForegroundDrawList();
+    // The cut between tour stops: black over everything but the text.
+    if (const float fade = m_tour.fade(); fade > 0.f)
+        dl->AddRectFilled(ImVec2(0.f, 0.f), ImVec2((float)w, (float)h), IM_COL32(0, 0, 0, (int)(fade * 255.f)));
     ImFont* font = m_renderer.uiFont();
     ImFont* title = m_renderer.titleFont();
     const float scale = m_renderer.uiScale();
@@ -882,9 +885,10 @@ void App::updateScene(double dt) {
 
     double tourJd = 0.0;
     m_clockHeld = false;
-    if (m_tour.active() && m_tour.clockOverride(tourJd)) {
-        m_simDays = tourJd - m_epochJd; // sunrise time-lapse
-    } else {
+    if (m_tour.active() && m_tour.takeClockJump(tourJd)) {
+        m_simDays = tourJd - m_epochJd; // a landing site lit by morning sun: jumped while the picture is black
+    }
+    {
         double scale = m_timeScale;
         if (m_calmClock && m_useGaia) {
             double cap = 1e30;
@@ -1350,6 +1354,7 @@ void App::drawUi(double dt) {
 
     ImGui::Checkbox("temporal anti-aliasing", &m_settings.taa);
     ImGui::SliderFloat("sun glare", &m_settings.sunGlare, 0.f, 3.f);
+    ImGui::SliderFloat("motion blur", &m_settings.motionBlur, 0.f, 1.5f);
     ImGui::SliderFloat("exposure", &m_settings.exposure, 0.05f, 8.f, "%.2f", ImGuiSliderFlags_Logarithmic);
     ImGui::SliderFloat("bloom", &m_settings.bloomStrength, 0.f, 2.f);
     ImGui::SliderFloat("bloom knee", &m_settings.bloomKnee, 0.f, 4.f);

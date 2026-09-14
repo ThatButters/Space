@@ -1440,7 +1440,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
         ppc.params = glm::vec4(tanHalf, aspect, kNearPlane, settings.taa && m_historyValid ? 0.85f : 0.f);
         ppc.camDelta = glm::vec4(scene.cameraOwnDelta, 0.f);
         ppc.sun = glm::vec4(scene.sunPosRel, scene.sunRadius);
-        ppc.glare = glm::vec4(settings.sunGlare * 0.6f, jitterNdc.x * 0.5f, jitterNdc.y * 0.5f, 0.f);
+        ppc.glare = glm::vec4(settings.sunGlare * 0.6f, jitterNdc.x * 0.5f, jitterNdc.y * 0.5f, settings.motionBlur);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_postPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_postLayout, 0, 1, &m_postSets[m_historyIndex], 0, nullptr);
         vkCmdPushConstants(cmd, m_postLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ppc), &ppc);

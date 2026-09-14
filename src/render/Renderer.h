@@ -50,6 +50,7 @@ struct RenderSettings {
     bool vsync = true;
     bool taa = true;            // temporal anti-aliasing
     float sunGlare = 1.0f;      // glare strength around the Sun (0 = off)
+    float motionBlur = 0.6f;    // blur along last frame's motion (0 = off)
 };
 
 // GPU layout of the per-frame shared block (shaders/frame.glsl).

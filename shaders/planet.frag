@@ -45,6 +45,7 @@ layout(location = 4) in float vRadial;
 layout(location = 0) out vec4 outColor;
 
 const int SUN = 0, ROCKY = 1, EARTH = 2, GAS = 3, ICE = 4, RING = 5;
+const float kKmPerParsecF = 3.0856775814913673e13;
 
 // Equirectangular lookup: u along longitude (seam at -x, east = +x toward -z so the map is not
 // mirrored in a right-handed frame), v from the north pole down.
@@ -547,6 +548,19 @@ void main() {
             // Today's real cloud cover where the satellite passes have data; the static map elsewhere.
             vec2 live = sampleMap(b.tiles.w, uv).rg;
             clouds = mix(clouds, live.r, live.g);
+        }
+        // Cloud shadows: the deck sits ~8 km up, so the ground under a cloud is shaded where the cloud
+        // projects along the Sun's direction (offset in the map by the tangent components of L).
+        {
+            float sinE = max(dot(p, Ll), 0.03);
+            vec3 Lt = (Ll - p * dot(p, Ll)) / sinE * (8.0 / (b.posRadius.w * kKmPerParsecF)); // in planet radii
+            vec2 duv = vec2(dot(Lt, east) / max(cosLat, 0.05) / (2.0 * PI), -dot(Lt, north) / PI);
+            float shadowCloud = b.tex.z >= 0 ? sampleMap(b.tex.z, uv - duv + vec2(time * 2e-6, 0.0)).r : clouds;
+            if (b.tiles.w >= 0) {
+                vec2 liveS = sampleMap(b.tiles.w, uv - duv).rg;
+                shadowCloud = mix(shadowCloud, liveS.r, liveS.g);
+            }
+            color *= 1.0 - 0.5 * smoothstep(0.1, 0.7, shadowCloud) * clamp(dot(N, L), 0.0, 1.0);
         }
         // Below the cloud map's ~5 km pixels, break the edges up with fine cellular structure (only when the
         // camera is close enough for a map pixel to span several screen pixels).

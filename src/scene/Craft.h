@@ -53,6 +53,7 @@ struct Craft {
 
     std::string blurb; // one line for the UI
     bool listed = true; // false: scenery that belongs to another entry (e.g. the flag beside a lander)
+    bool keepClock = false; // never move the clock to light this stop (a dawn launch stays at dawn)
 
     // Filled by update():
     glm::dvec3 position{0.0};

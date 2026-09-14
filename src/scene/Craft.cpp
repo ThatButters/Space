@@ -117,6 +117,7 @@ void CraftCatalog::build(const SolarSystem& solar) {
     surface("Saturn V", "saturn_v.glb", 111.f, "Earth", 28.95, -79.65, 72, "Apollo launch, T+2:20: 60 km up, first stage still burning");
     m_crafts.back().altitudeKm = 60.0;
     m_crafts.back().modelPitchDeg = -58.f;
+    m_crafts.back().keepClock = true;
     {
         Craft plume = m_crafts.back();
         plume.name = "Saturn V plume";

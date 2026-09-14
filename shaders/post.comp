@@ -24,7 +24,7 @@ layout(push_constant) uniform PushConstants {
     vec4 params;   // x tan(fov/2), y aspect, z near plane, w history blend (0 = no history)
     vec4 camDelta; // xyz camera movement since last frame (world), w unused
     vec4 sun;      // xyz camera-relative Sun position, w Sun radius (world)
-    vec4 glare;    // x strength, y jitter u, z jitter v, w unused
+    vec4 glare;    // x strength, y jitter u, z jitter v, w motion blur amount
 } pc;
 
 vec3 viewRay(vec2 uv) {
@@ -66,6 +66,22 @@ void main() {
     }
     vec3 color = current;
     float blend = pc.params.w;
+    if (prevClip.w > 1e-30) {
+        // Motion blur along the screen-space movement since the last frame (capped): what sells speed.
+        vec2 prevUv0 = prevClip.xy / prevClip.w * 0.5 + 0.5;
+        vec2 vel = (uv - prevUv0) * vec2(size);
+        float len = length(vel);
+        if (len > 1.5 && pc.glare.w > 0.0) {
+            vec2 step = vel / len * min(len, 28.0) / vec2(size) * pc.glare.w;
+            vec3 acc = vec3(0.0);
+            for (int i = 0; i < 8; ++i) {
+                float f = (float(i) + 0.5) / 8.0 - 0.5;
+                acc += texture(uHdr, uvJ + step * f).rgb;
+            }
+            current = acc / 8.0;
+            color = current;
+        }
+    }
     if (blend > 0.0 && prevClip.w > 1e-30) {
         vec2 prevUv = prevClip.xy / prevClip.w * 0.5 + 0.5;
         if (all(greaterThanEqual(prevUv, vec2(0.0))) && all(lessThanEqual(prevUv, vec2(1.0)))) {
