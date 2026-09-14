@@ -103,15 +103,15 @@ void CraftCatalog::build(const SolarSystem& solar) {
     // --- Landing sites (selenographic / areographic coordinates) ---
     surface("Apollo 11 (Tranquility Base)", "apollo_lm.glb", 9.4f, "Moon", 0.674, 23.473, 0, "Eagle's descent stage, where the first footprints are");
     m_crafts.back().when = "20 July 1969";
-    surface("Apollo 12", "apollo_lm.glb", 9.4f, "Moon", -3.012, -23.422, 40, "Intrepid, Ocean of Storms, 1969");
+    surface("Apollo 12", "apollo_lm.glb", 9.4f, "Moon", -3.012, -23.422, 40, "Intrepid, Ocean of Storms");
     m_crafts.back().when = "19 November 1969";
-    surface("Apollo 14", "apollo_lm.glb", 9.4f, "Moon", -3.646, -17.472, 80, "Antares, Fra Mauro, 1971");
+    surface("Apollo 14", "apollo_lm.glb", 9.4f, "Moon", -3.646, -17.472, 80, "Antares, Fra Mauro");
     m_crafts.back().when = "5 February 1971";
-    surface("Apollo 15", "apollo_lm.glb", 9.4f, "Moon", 26.132, 3.634, 120, "Falcon, Hadley Rille, 1971");
+    surface("Apollo 15", "apollo_lm.glb", 9.4f, "Moon", 26.132, 3.634, 120, "Falcon, Hadley Rille");
     m_crafts.back().when = "30 July 1971";
-    surface("Apollo 16", "apollo_lm.glb", 9.4f, "Moon", -8.973, 15.499, 160, "Orion, Descartes Highlands, 1972");
+    surface("Apollo 16", "apollo_lm.glb", 9.4f, "Moon", -8.973, 15.499, 160, "Orion, Descartes Highlands");
     m_crafts.back().when = "21 April 1972";
-    surface("Apollo 17", "apollo_lm.glb", 9.4f, "Moon", 20.191, 30.772, 200, "Challenger, Taurus-Littrow, 1972");
+    surface("Apollo 17", "apollo_lm.glb", 9.4f, "Moon", 20.191, 30.772, 200, "Challenger, Taurus-Littrow");
     m_crafts.back().when = "11 December 1972";
     surface("Perseverance", "perseverance.glb", 3.0f, "Mars", 18.445, 77.451, 30, "Jezero crater, since 2021");
     surface("Ingenuity", "ingenuity.glb", 1.2f, "Mars", 18.44, 77.42, 0, "First aircraft on another world");

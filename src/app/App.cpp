@@ -102,7 +102,7 @@ App::App(int argc, char** argv) {
             return Tour::Stop{c >= 0 ? m_crafts.crafts()[c].parent : -1, c};
         };
         std::vector<Tour::Stop> stops = {
-            craft("Saturn V"), craft("ISS"), body("Moon"), craft("Apollo 11 (Tranquility Base)"), craft("LRO"),
+            craft("Saturn V"), craft("ISS"), body("Moon"), craft("Apollo 11 (Tranquility Base)"), craft("Apollo 15"), craft("Apollo 17"), craft("LRO"),
             body("Mars"), craft("Perseverance"), craft("MRO"), body("Jupiter"), craft("Juno"), body("Io"),
             body("Saturn"), Tour::Stop{m_solar.find("Saturn"), -1, 1}, body("Titan"), craft("Huygens"), body("Uranus"), body("Neptune"),
             craft("Voyager 1"), body("Sun"), craft("Parker Solar Probe"), body("Mercury"), body("Venus"),

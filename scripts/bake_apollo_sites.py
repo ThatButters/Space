@@ -74,7 +74,23 @@ def read_pds_img(path):
     stype = val("SAMPLE_TYPE") or ""
     offset = (int(re.findall(r"\d+", pointer)[0]) - 1) * record if pointer and "BYTES" not in pointer else int(re.findall(r"\d+", pointer)[0])
     dtype = {16: "<i2" if "UNSIGNED" not in stype else "<u2", 32: "<f4"}[bits]
-    arr = np.memmap(path, dtype=dtype, mode="r", offset=offset, shape=(lines, samples))
+
+    class Rows:
+        """Window reader for multi-gigabyte mosaics (a whole-file memmap fails on Windows): only the
+        requested rows are read, straight from the file."""
+        shape = (lines, samples)
+        ndim = 2
+
+        def __getitem__(self, key):
+            rs, cs = key
+            r0, r1 = rs.start or 0, rs.stop if rs.stop is not None else lines
+            item = np.dtype(dtype).itemsize
+            with open(path, "rb") as f:
+                f.seek(offset + r0 * samples * item)
+                block = np.fromfile(f, dtype=dtype, count=(r1 - r0) * samples).reshape(r1 - r0, samples)
+            return block[:, cs]
+
+    arr = Rows()
     lab = {k: (float(val(k).split()[0]) if val(k) else None) for k in
            ("MAXIMUM_LATITUDE", "MINIMUM_LATITUDE", "EASTERNMOST_LONGITUDE", "WESTERNMOST_LONGITUDE", "MAP_SCALE")}
     return arr, lab
