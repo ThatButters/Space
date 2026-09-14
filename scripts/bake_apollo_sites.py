@@ -278,7 +278,7 @@ def sun_azimuth_check(res, dem, step, az_candidates):
     out = {}
     for az in az_candidates:
         a = math.radians(az)
-        tilt = d_e * math.sin(a) + d_n * math.cos(a)
+        tilt = -(d_e * math.sin(a) + d_n * math.cos(a))  # ground facing the Sun: height falls toward it
         m = np.isfinite(r) & np.isfinite(tilt)
         out[az] = float(np.corrcoef(r[m].ravel(), tilt[m].ravel())[0, 1])
     return max(out, key=out.get), out
@@ -449,13 +449,35 @@ def bake_site(site, size_km, texbake):
         (q0, q1, p0, p1), _ = crop_window(olab, arr.shape[:2], lat0, lon0, size_km)
         img = np.array(arr[q0:q1, p0:p1], dtype=np.float32)
         image_id = re.search(r"_(M\d+)_", os.path.basename(tif))
-        sun_inc, sun_az = ORTHO_SUN.get(image_id.group(1) if image_id else "", (olab.get("INCIDENCE_ANGLE") or 60.0, 90.0))
         if img.ndim == 3:
             img = img[..., 0]
         good = img > 0
         if good.mean() < 0.5:
             continue
         scale_px = img.shape[0] / h  # ortho pixels per DTM pixel
+        known = ORTHO_SUN.get(image_id.group(1) if image_id else "")
+        if known:
+            sun_inc, sun_az = known
+        else:
+            # The photo's Sun azimuth from the photo itself: the DTM's shading matches the image best when
+            # lit from the right direction (with the wrong one, the relief would come out inverted).
+            sun_inc = olab.get("INCIDENCE_ANGLE") or lab.get("INCIDENCE_ANGLE") or 60.0
+            fill = float(np.median(img[good])) if good.any() else 0.0
+            small = np.asarray(Image.fromarray(np.where(good, img, fill).astype(np.float32)).resize((w, h), Image.BOX), dtype=np.float32)
+            small_hp = small - box_blur(small, 8)
+            m = np.asarray(Image.fromarray(good.astype(np.float32)).resize((w, h), Image.BOX)) > 0.99
+            if m.sum() < 100:
+                m = np.ones((h, w), bool)
+            best, sun_az = -2.0, 90.0
+            for az_deg in range(0, 360, 10):
+                inc_r, az_r = math.radians(sun_inc), math.radians(az_deg)
+                sv = np.array([math.sin(inc_r) * math.sin(az_r), math.sin(inc_r) * math.cos(az_r), math.cos(inc_r)])
+                sh = np.clip(nx * sv[0] + ny * sv[1] + inv * sv[2], 0.0, 1.0)
+                sh_hp = sh - box_blur(sh, 8)
+                c = np.corrcoef(small_hp[m], sh_hp[m])[0, 1]
+                if c > best:
+                    best, sun_az = c, float(az_deg)
+            print(f"{site}: photo Sun azimuth {sun_az:.0f} deg (correlation {best:.2f}), incidence {sun_inc:.1f}")
         # The image's own shading: Lambert from the DTM normals toward the image's Sun, upsampled.
         inc = math.radians(sun_inc)
         az = math.radians(sun_az)
