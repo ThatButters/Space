@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SPACE_ENABLE_VALIDATION "Enable Vulkan validation layers in Debug builds" ON)
-option(SPACE_ENABLE_STREAMLINE "Build with NVIDIA Streamline (DLSS) if the SDK is present in external/streamline" ON)
+option(SPACE_ENABLE_DLSS "Build with NVIDIA DLSS (NGX SDK) if it is present in external/dlss" ON)
 
 # ---------------------------------------------------------------------------
 # Dependencies (Vulkan from the LunarG SDK, everything else from vcpkg)
@@ -87,21 +87,21 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
-# NVIDIA Streamline (DLSS Super Resolution / Frame Generation / Ray Reconstruction)
-# Drop the SDK into external/streamline (see external/streamline/README.md).
+# NVIDIA DLSS Super Resolution (NGX SDK, Vulkan)
+# Drop the SDK into external/dlss (see external/dlss/README.md).
 # ---------------------------------------------------------------------------
-set(SPACE_STREAMLINE_DIR ${CMAKE_SOURCE_DIR}/external/streamline)
-if(SPACE_ENABLE_STREAMLINE AND EXISTS ${SPACE_STREAMLINE_DIR}/include/sl.h)
-    message(STATUS "Streamline SDK found: DLSS integration enabled")
-    target_include_directories(Space PRIVATE ${SPACE_STREAMLINE_DIR}/include)
-    target_compile_definitions(Space PRIVATE SPACE_HAS_STREAMLINE=1)
-    file(GLOB SPACE_STREAMLINE_DLLS ${SPACE_STREAMLINE_DIR}/bin/x64/*.dll)
-    foreach(DLL ${SPACE_STREAMLINE_DLLS})
-        add_custom_command(TARGET Space POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DLL} $<TARGET_FILE_DIR:Space>)
-    endforeach()
+set(SPACE_DLSS_DIR ${CMAKE_SOURCE_DIR}/external/dlss)
+if(SPACE_ENABLE_DLSS AND EXISTS ${SPACE_DLSS_DIR}/include/nvsdk_ngx_vk.h AND EXISTS ${SPACE_DLSS_DIR}/lib/nvsdk_ngx_d.lib)
+    message(STATUS "DLSS SDK found: NGX integration enabled")
+    target_include_directories(Space PRIVATE ${SPACE_DLSS_DIR}/include)
+    target_compile_definitions(Space PRIVATE SPACE_HAS_DLSS=1)
+    # Dynamic-CRT import libraries; the _dbg flavour matches the Debug runtime.
+    target_link_libraries(Space PRIVATE
+        $<IF:$<CONFIG:Debug>,${SPACE_DLSS_DIR}/lib/nvsdk_ngx_d_dbg.lib,${SPACE_DLSS_DIR}/lib/nvsdk_ngx_d.lib>)
+    add_custom_command(TARGET Space POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SPACE_DLSS_DIR}/lib/nvngx_dlss.dll $<TARGET_FILE_DIR:Space>)
 else()
-    message(STATUS "Streamline SDK not found in external/streamline: building without DLSS")
+    message(STATUS "DLSS SDK not found in external/dlss: building without DLSS")
 endif()
 
 # Shaders sit next to the exe. Assets are read from the source tree (multi-GB maps are not copied);

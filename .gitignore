@@ -5,8 +5,8 @@ out/
 .cache/
 *.spv
 vcpkg_installed/
-external/streamline/*
-!external/streamline/README.md
+external/dlss/*
+!external/dlss/README.md
 assets/gaia/
 imgui.ini
 assets/textures/

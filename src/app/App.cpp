@@ -64,6 +64,12 @@ App::App(int argc, char** argv) {
         else if (a == "--diag-time" && i + 1 < argc) m_diagTime = std::atof(argv[++i]);
         else if (a == "--time-scale" && i + 1 < argc) m_timeScale = (float)std::atof(argv[++i]);
         else if (a == "--sdr") m_settings.hdrOutput = false;
+        else if (a == "--no-dlss") m_settings.dlss = false;
+        else if (a == "--dlss-jitter" && i + 2 < argc) {
+            m_settings.dlssJitterSign.x = (float)std::atof(argv[++i]);
+            m_settings.dlssJitterSign.y = (float)std::atof(argv[++i]);
+        }
+        else if (a == "--dlss" && i + 1 < argc) m_settings.dlssQuality = std::clamp(std::atoi(argv[++i]), 0, 4);
         else if (a == "--tour") m_startTour = true;
         else if (a == "--no-tour") m_startTour = false;
         else if (a == "--tour-start" && i + 1 < argc) m_tourStart = std::atoi(argv[++i]);
@@ -80,6 +86,8 @@ App::App(int argc, char** argv) {
 #else
     const bool validation = false;
 #endif
+    m_ctx.instanceExtensionHook = render::Dlss::instanceExtensions;
+    m_ctx.deviceExtensionHook = render::Dlss::deviceExtensions;
     m_ctx.init(*m_window, validation);
     m_renderer.init(m_ctx, *m_window);
 
@@ -1359,6 +1367,16 @@ void App::drawUi(double dt) {
     }
     ImGui::Separator();
 
+    if (m_renderer.dlssAvailable()) {
+        ImGui::Checkbox("DLSS super resolution", &m_settings.dlss);
+        const char* names[] = {"performance", "balanced", "quality", "ultra quality", "DLAA (native)"};
+        ImGui::Combo("DLSS quality", &m_settings.dlssQuality, names, 5);
+        if (m_renderer.dlssActive()) {
+            const VkExtent2D r = m_renderer.renderExtent();
+            ImGui::Text("rendering %ux%u", r.width, r.height);
+        }
+        ImGui::SliderFloat2("DLSS jitter sign", &m_settings.dlssJitterSign.x, -1.f, 1.f);
+    }
     ImGui::Checkbox("temporal anti-aliasing", &m_settings.taa);
     ImGui::SliderFloat("sun glare", &m_settings.sunGlare, 0.f, 3.f);
     ImGui::SliderFloat("motion blur", &m_settings.motionBlur, 0.f, 1.5f);

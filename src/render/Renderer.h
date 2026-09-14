@@ -4,6 +4,7 @@
 #include "gfx/Swapchain.h"
 #include "gfx/GltfModel.h"
 #include "gfx/Texture.h"
+#include "render/Dlss.h"
 #include "scene/Craft.h"
 #include "scene/SolarSystem.h"
 
@@ -48,7 +49,10 @@ struct RenderSettings {
     bool drawStars = true;
     bool drawBodies = true;
     bool vsync = true;
-    bool taa = true;            // temporal anti-aliasing
+    bool taa = true;            // temporal anti-aliasing (replaced by DLSS when that is active)
+    bool dlss = true;           // DLSS super resolution when the SDK and GPU allow it
+    int dlssQuality = 2;        // Dlss::Quality
+    glm::vec2 dlssJitterSign{1.f, 1.f}; // sign of the jitter offset handed to DLSS (tuning aid)
     float sunGlare = 1.0f;      // glare strength around the Sun (0 = off)
     float motionBlur = 0.6f;    // blur along last frame's motion (0 = off)
 };
@@ -155,6 +159,9 @@ public:
     float lastGpuFrameMs() const { return m_gpuFrameMs; }
     bool hdrAvailable() const { return m_swapchain.hdrAvailable(); }
     bool hdrActive() const { return m_swapchain.isHdr(); }
+    bool dlssAvailable() const { return m_dlss.available(); }
+    bool dlssActive() const { return m_dlssActive; }
+    VkExtent2D renderExtent() const { return m_renderExtent; }
 
     // Debug: on the next frame, read the HDR target and bloom mip 0 back and log channel statistics.
     void requestDiagnostic() { m_diagRequested = true; }
@@ -232,6 +239,24 @@ private:
     void createPostResources();
     void destroyPostResources();
     VkSampler m_linearSampler = VK_NULL_HANDLE;
+
+    // DLSS super resolution: the scene renders into m_hdr at m_renderExtent, DLSS reconstructs m_dlssOut at
+    // display size, and the post pass reads that instead of m_hdr.
+    Dlss m_dlss;
+    bool m_dlssWanted = true;
+    int m_dlssQuality = 2;
+    bool m_dlssActive = false;
+    VkExtent2D m_renderExtent{};
+    gfx::Image m_motion;  // rg16f motion vectors, render size
+    gfx::Image m_dlssOut; // rgba16f, display size
+    VkDescriptorSetLayout m_motionSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet m_motionSet = VK_NULL_HANDLE;
+    VkPipelineLayout m_motionLayout = VK_NULL_HANDLE;
+    VkPipeline m_motionPipeline = VK_NULL_HANDLE;
+    float m_frameDeltaMs = 16.7f;
+    double m_lastFrameTime = 0.0;
+    bool createDlssFeature(VkExtent2D out);
+    void destroyDlssResources();
 
     // Bloom mip chain (half res downward), all kept in GENERAL layout for compute access.
     struct BloomMip {

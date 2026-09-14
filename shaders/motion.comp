@@ -1,0 +1,50 @@
+#version 460
+// Motion vectors for DLSS, at the internal render resolution: where each pixel was last frame, in
+// pixels (previous = current + mv), from the depth buffer and the camera's own movement. The depth is
+// jittered like the colour, so the vectors are too (DLSS is told MVJittered).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uDepth; // reversed, 0 = infinity
+layout(set = 0, binding = 1, rg16f) uniform writeonly image2D uOut;
+
+layout(push_constant) uniform PushConstants {
+    mat4 prevViewProj; // last frame, unjittered
+    mat4 viewProj;     // this frame, unjittered
+    vec4 camRight, camUp, camForward;
+    vec4 params;   // x tan(fov/2), y aspect, z near plane, w unused
+    vec4 camDelta; // xyz camera movement since last frame (world)
+    vec4 sun;      // unused here
+    vec4 glare;    // y, z: jitter as a uv offset
+} pc;
+
+vec3 viewRay(vec2 uv) {
+    vec2 ndc = uv * 2.0 - 1.0; // Vulkan: y down
+    return normalize(pc.camForward.xyz + ndc.x * pc.params.x * pc.params.y * pc.camRight.xyz - ndc.y * pc.params.x * pc.camUp.xyz);
+}
+
+void main() {
+    ivec2 size = imageSize(uOut);
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    vec2 texel = 1.0 / vec2(size);
+    // This texel's sample sits at the jittered position; reproject that point.
+    vec2 uv = (vec2(gid) + 0.5) * texel + pc.glare.yz;
+
+    float d = texelFetch(uDepth, gid, 0).r;
+    vec3 dir = viewRay(uv);
+    vec4 prevClip;
+    if (d <= 0.0) {
+        prevClip = pc.prevViewProj * vec4(dir, 0.0);
+    } else {
+        float zView = pc.params.z / d;
+        vec3 p = dir * (zView / max(dot(dir, pc.camForward.xyz), 1e-4)) + pc.camDelta.xyz;
+        prevClip = pc.prevViewProj * vec4(p, 1.0);
+    }
+    vec2 mv = vec2(0.0);
+    if (prevClip.w > 1e-30) {
+        vec2 prevUv = prevClip.xy / prevClip.w * 0.5 + 0.5;
+        mv = (prevUv - uv) * vec2(size);
+    }
+    imageStore(uOut, gid, vec4(mv, 0.0, 0.0));
+}

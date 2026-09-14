@@ -2,7 +2,9 @@
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace space {
 class Window;
@@ -16,6 +18,11 @@ class Context {
 public:
     void init(const Window& window, bool enableValidation);
     void shutdown();
+
+    // Optional extra extensions (e.g. what DLSS asks for), set before init. Names the driver does not
+    // offer are skipped with a log line rather than failing creation.
+    std::function<void(std::vector<std::string>&)> instanceExtensionHook;
+    std::function<void(VkInstance, VkPhysicalDevice, std::vector<std::string>&)> deviceExtensionHook;
 
     VkInstance instance() const { return m_instance; }
     VkPhysicalDevice physicalDevice() const { return m_physicalDevice; }
@@ -48,6 +55,7 @@ private:
     uint32_t m_queueFamily = 0;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
     VkCommandPool m_oneShotPool = VK_NULL_HANDLE;
+    std::vector<std::string> m_extraInstanceExts, m_extraDeviceExts; // storage for the hook results
 };
 
 } // namespace space::gfx

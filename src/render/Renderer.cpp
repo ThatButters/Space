@@ -155,6 +155,10 @@ void Renderer::init(gfx::Context& ctx, Window& window) {
     m_ctx = &ctx;
     m_window = &window;
     VkDevice dev = ctx.device();
+    m_dlss.init(ctx.instance(), ctx.physicalDevice(), dev);
+    // Rendering at DLSS's internal size, the maps should still be sampled at display-size detail
+    // (quality mode renders at 2/3: about -0.6 mip levels).
+    const float mapLodBias = m_dlss.available() && m_dlssWanted ? -0.58f : 0.f;
 
     VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sci.magFilter = VK_FILTER_LINEAR;
@@ -174,6 +178,7 @@ void Renderer::init(gfx::Context& ctx, Window& window) {
     tsi.anisotropyEnable = VK_TRUE;
     tsi.maxAnisotropy = 16.f;
     tsi.maxLod = VK_LOD_CLAMP_NONE;
+    tsi.mipLodBias = mapLodBias;
     VK_CHECK(vkCreateSampler(dev, &tsi, nullptr, &m_textureSampler));
     tsi.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     VK_CHECK(vkCreateSampler(dev, &tsi, nullptr, &m_tileSampler));
@@ -363,6 +368,10 @@ void Renderer::shutdown() {
     if (m_postPipeline) vkDestroyPipeline(dev, m_postPipeline, nullptr);
     if (m_postLayout) vkDestroyPipelineLayout(dev, m_postLayout, nullptr);
     if (m_postSetLayout) vkDestroyDescriptorSetLayout(dev, m_postSetLayout, nullptr);
+    if (m_motionPipeline) vkDestroyPipeline(dev, m_motionPipeline, nullptr);
+    if (m_motionLayout) vkDestroyPipelineLayout(dev, m_motionLayout, nullptr);
+    if (m_motionSetLayout) vkDestroyDescriptorSetLayout(dev, m_motionSetLayout, nullptr);
+    m_dlss.shutdown();
     for (VkPipeline p : {m_skyPipeline, m_starPipeline, m_volumePipeline, m_planetPipeline, m_ringPipeline,
                          m_bloomDownPipeline, m_bloomUpPipeline, m_linePipeline, m_dustPipeline, m_atmoPipeline,
                          m_cloudPipeline, m_craftPipeline, m_shadowPipeline, m_glintPipeline, m_plumePipeline})
@@ -420,19 +429,52 @@ void Renderer::createSwapchainDependent() {
     for (auto& s : m_renderFinished) VK_CHECK(vkCreateSemaphore(m_ctx->device(), &si, nullptr, &s));
 
     auto ext = m_swapchain.extent();
-    m_hdr.create(*m_ctx, ext.width, ext.height, kHdrFormat,
+    m_renderExtent = ext;
+    m_dlssActive = m_dlssWanted && m_dlss.available() && createDlssFeature(ext);
+    const VkExtent2D rext = m_renderExtent;
+    m_hdr.create(*m_ctx, rext.width, rext.height, kHdrFormat,
                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-    m_depth.create(*m_ctx, ext.width, ext.height, kDepthFormat,
+    m_depth.create(*m_ctx, rext.width, rext.height, kDepthFormat,
                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    if (m_dlssActive) {
+        const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        m_motion.create(*m_ctx, rext.width, rext.height, VK_FORMAT_R16G16_SFLOAT, usage);
+        m_dlssOut.create(*m_ctx, ext.width, ext.height, kHdrFormat, usage);
+        VkCommandBuffer cmd = m_ctx->beginOneShot();
+        for (gfx::Image* img : {&m_motion, &m_dlssOut})
+            gfx::transitionImage(cmd, img->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        m_ctx->endOneShot(cmd);
+    }
     createPostResources();
     createBloomChain();
     updateTonemapDescriptor();
 }
 
+bool Renderer::createDlssFeature(VkExtent2D out) {
+    uint32_t rw = 0, rh = 0;
+    if (!m_dlss.optimalRenderSize(out.width, out.height, (Dlss::Quality)m_dlssQuality, rw, rh)) return false;
+    VkCommandBuffer cmd = m_ctx->beginOneShot();
+    const bool ok = m_dlss.createFeature(cmd, rw, rh, out.width, out.height, (Dlss::Quality)m_dlssQuality);
+    m_ctx->endOneShot(cmd);
+    if (!ok) return false;
+    m_renderExtent = {rw, rh};
+    return true;
+}
+
+void Renderer::destroyDlssResources() {
+    m_dlss.releaseFeature();
+    m_motion.destroy(*m_ctx);
+    m_dlssOut.destroy(*m_ctx);
+    m_dlssActive = false;
+}
+
 void Renderer::destroySwapchainDependent() {
     destroyBloomChain();
     destroyPostResources();
+    destroyDlssResources();
     m_depth.destroy(*m_ctx);
     m_hdr.destroy(*m_ctx);
     for (auto s : m_renderFinished) vkDestroySemaphore(m_ctx->device(), s, nullptr);
@@ -575,10 +617,21 @@ void Renderer::createPostResources() {
         m_postLayout = gfx::createPipelineLayout(*m_ctx, {m_postSetLayout}, sizeof(PostPushConstants),
                                                  VK_SHADER_STAGE_COMPUTE_BIT);
         m_postPipeline = gfx::createComputePipeline(*m_ctx, "post.comp.spv", m_postLayout);
+        // Motion vectors for DLSS: depth in, rg16f out, the same push constants as the post pass.
+        VkDescriptorSetLayoutBinding mb[2] = {
+            {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        VkDescriptorSetLayoutCreateInfo mci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        mci.bindingCount = 2;
+        mci.pBindings = mb;
+        VK_CHECK(vkCreateDescriptorSetLayout(dev, &mci, nullptr, &m_motionSetLayout));
+        m_motionLayout = gfx::createPipelineLayout(*m_ctx, {m_motionSetLayout}, sizeof(PostPushConstants),
+                                                   VK_SHADER_STAGE_COMPUTE_BIT);
+        m_motionPipeline = gfx::createComputePipeline(*m_ctx, "motion.comp.spv", m_motionLayout);
     }
-    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}};
+    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5}};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    dpi.maxSets = 2;
+    dpi.maxSets = 3;
     dpi.poolSizeCount = 2;
     dpi.pPoolSizes = sizes;
     VK_CHECK(vkCreateDescriptorPool(dev, &dpi, nullptr, &m_postPool));
@@ -589,8 +642,10 @@ void Renderer::createPostResources() {
     dsa.pSetLayouts = layouts;
     VK_CHECK(vkAllocateDescriptorSets(dev, &dsa, m_postSets));
     for (int i = 0; i < 2; ++i) {
+        // With DLSS the resolve reads the reconstructed display-size image instead of the jittered render.
         VkDescriptorImageInfo infos[5] = {
-            {m_linearSampler, m_hdr.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            m_dlssActive ? VkDescriptorImageInfo{m_linearSampler, m_dlssOut.view, VK_IMAGE_LAYOUT_GENERAL}
+                         : VkDescriptorImageInfo{m_linearSampler, m_hdr.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
             {m_shadowSampler, m_depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
             {m_linearSampler, m_history[1 - i].view, VK_IMAGE_LAYOUT_GENERAL},
             {VK_NULL_HANDLE, m_post.view, VK_IMAGE_LAYOUT_GENERAL},
@@ -605,6 +660,26 @@ void Renderer::createPostResources() {
             writes[k].pImageInfo = &infos[k];
         }
         vkUpdateDescriptorSets(dev, 5, writes, 0, nullptr);
+    }
+    m_motionSet = VK_NULL_HANDLE;
+    if (m_dlssActive) {
+        VkDescriptorSetAllocateInfo ma{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ma.descriptorPool = m_postPool;
+        ma.descriptorSetCount = 1;
+        ma.pSetLayouts = &m_motionSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(dev, &ma, &m_motionSet));
+        VkDescriptorImageInfo infos[2] = {{m_shadowSampler, m_depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                          {VK_NULL_HANDLE, m_motion.view, VK_IMAGE_LAYOUT_GENERAL}};
+        VkWriteDescriptorSet writes[2];
+        for (int k = 0; k < 2; ++k) {
+            writes[k] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[k].dstSet = m_motionSet;
+            writes[k].dstBinding = k;
+            writes[k].descriptorCount = 1;
+            writes[k].descriptorType = k == 0 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            writes[k].pImageInfo = &infos[k];
+        }
+        vkUpdateDescriptorSets(dev, 2, writes, 0, nullptr);
     }
 }
 
@@ -1020,6 +1095,13 @@ void Renderer::endFrame(const Camera& camera, double timeSeconds, const RenderSe
         m_preferHdr = settings.hdrOutput;
         m_recreateSwapchain = true;
     }
+    if (settings.dlss != m_dlssWanted || settings.dlssQuality != m_dlssQuality) {
+        m_dlssWanted = settings.dlss;
+        m_dlssQuality = settings.dlssQuality;
+        m_recreateSwapchain = true;
+    }
+    if (m_lastFrameTime > 0.0) m_frameDeltaMs = (float)std::clamp((timeSeconds - m_lastFrameTime) * 1000.0, 1.0, 100.0);
+    m_lastFrameTime = timeSeconds;
     if (m_recreateSwapchain) return; // rebuilt at the next beginFrame; this frame is dropped
 
     int w = 0, h = 0;
@@ -1140,9 +1222,12 @@ void Renderer::endFrame(const Camera& camera, double timeSeconds, const RenderSe
 
 void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camera& camera, double time,
                            const RenderSettings& settings, const FrameScene& scene) {
-    const VkExtent2D ext = m_swapchain.extent();
-    const VkViewport viewport{0.f, 0.f, (float)ext.width, (float)ext.height, 0.f, 1.f};
-    const VkRect2D scissor{{0, 0}, ext};
+    // ext: the display (swapchain) size; rext: the internal render size (smaller with DLSS).
+    const VkExtent2D ext = m_swapchain.extent(), rext = m_hdr.extent;
+    const VkViewport viewport{0.f, 0.f, (float)rext.width, (float)rext.height, 0.f, 1.f};
+    const VkRect2D scissor{{0, 0}, rext};
+    const VkViewport outViewport{0.f, 0.f, (float)ext.width, (float)ext.height, 0.f, 1.f};
+    const VkRect2D outScissor{{0, 0}, ext};
     const float aspect = (float)ext.width / (float)ext.height;
     const float tanHalf = std::tan(camera.fovY * 0.5f);
     const Frame& frame = m_frames[m_frameIndex];
@@ -1157,21 +1242,23 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
     view.camUp = glm::vec4(u, 0.f);
     view.camForward = glm::vec4(f, 0.f);
     view.camPos = glm::vec4(glm::vec3(camera.position), 0.f);
-    view.params = glm::vec4(tanHalf, aspect, (float)time, 2.f * tanHalf / (float)ext.height);
+    view.params = glm::vec4(tanHalf, aspect, (float)time, 2.f * tanHalf / (float)rext.height);
 
     const glm::mat4 viewProjClean = makeViewProj(camera, aspect);
     // TAA: a Halton (2,3) sub-pixel jitter on the projection; the post pass samples it back to centre.
     glm::vec2 jitterPx(0.f);
-    if (settings.taa) {
+    if (settings.taa || m_dlssActive) {
         auto halton = [](uint32_t i, uint32_t b) {
             float f = 1.f, r = 0.f;
             while (i > 0) { f /= (float)b; r += f * (float)(i % b); i /= b; }
             return r;
         };
-        const uint32_t k = (m_frameSerial % 8) + 1;
+        // DLSS reconstructs from many more phases than the 3x3 TAA clamp can use.
+        const uint32_t phases = m_dlssActive ? 32 : 8;
+        const uint32_t k = (m_frameSerial % phases) + 1;
         jitterPx = glm::vec2(halton(k, 2) - 0.5f, halton(k, 3) - 0.5f);
     }
-    const glm::vec2 jitterNdc = jitterPx * glm::vec2(2.f / ext.width, 2.f / ext.height);
+    const glm::vec2 jitterNdc = jitterPx * glm::vec2(2.f / rext.width, 2.f / rext.height);
     const glm::mat4 viewProj = glm::translate(glm::mat4(1.f), glm::vec3(jitterNdc, 0.f)) * viewProjClean;
 
     if (scene.shadowEnabled && !scene.shadowCasters.empty() && settings.drawBodies) recordShadowPass(cmd, scene);
@@ -1294,7 +1381,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
                 const glm::vec3 rel = glm::vec3(scene.crafts[i].model[3]);
                 const float dist = glm::length(rel);
                 const float size = glm::length(glm::vec3(scene.crafts[i].model[0])) * m_models[mi].extent;
-                if (dist > 1e-30f && size / dist < 0.25f * (2.f * tanHalf / (float)ext.height)) continue; // the glint covers it
+                if (dist > 1e-30f && size / dist < 0.25f * (2.f * tanHalf / (float)rext.height)) continue; // the glint covers it
                 const ModelGpu& m = m_models[mi];
                 vkCmdBindVertexBuffers(cmd, 0, 1, &m.vb.buffer, &zero);
                 vkCmdBindIndexBuffer(cmd, m.ib.buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -1348,7 +1435,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
         if (!scene.crafts.empty() && settings.drawBodies) {
             GlintPushConstants gpc{};
             gpc.viewProj = viewProj;
-            gpc.params = glm::vec4((float)ext.width, (float)ext.height, 2.f * tanHalf / (float)ext.height, 1.2f);
+            gpc.params = glm::vec4((float)rext.width, (float)rext.height, 2.f * tanHalf / (float)rext.height, 1.2f);
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glintPipeline);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glintLayout, 0, 1, &frame.craftSet, 0, nullptr);
             vkCmdPushConstants(cmd, m_glintLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(gpc), &gpc);
@@ -1360,7 +1447,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             StarPushConstants spc{};
             spc.viewProj = viewProj;
             spc.camPos = glm::vec4(glm::vec3(camera.position), 0.f);
-            spc.params = glm::vec4((float)ext.width, (float)ext.height, settings.starBrightness,
+            spc.params = glm::vec4((float)rext.width, (float)rext.height, settings.starBrightness,
                                    settings.starMaxRadiusPx);
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_starPipeline);
             VkDescriptorSet starSets[] = {m_starSet, frame.frameSet};
@@ -1390,7 +1477,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             dpc.viewProj = viewProj;
             dpc.phase = glm::vec4(scene.dustPhase, scene.dustExtent);
             dpc.velocity = glm::vec4(scene.cameraVelocity, (float)time);
-            dpc.params = glm::vec4((float)ext.width, (float)ext.height, scene.dustBrightness, 0.f);
+            dpc.params = glm::vec4((float)rext.width, (float)rext.height, scene.dustBrightness, 0.f);
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_dustPipeline);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_dustLayout, 0, 1, &frame.frameSet, 0,
                                     nullptr);
@@ -1423,6 +1510,47 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    if (m_dlssActive) {
+        // ---- DLSS: motion vectors from depth, then reconstruction to display size ----------------
+        PostPushConstants mpc{};
+        mpc.prevViewProj = m_historyValid ? m_prevViewProj : viewProjClean;
+        mpc.viewProj = viewProjClean;
+        mpc.camRight = glm::vec4(r, 0.f);
+        mpc.camUp = glm::vec4(u, 0.f);
+        mpc.camForward = glm::vec4(f, 0.f);
+        mpc.params = glm::vec4(tanHalf, aspect, kNearPlane, 0.f);
+        mpc.camDelta = glm::vec4(scene.cameraOwnDelta, 0.f);
+        mpc.glare = glm::vec4(0.f, jitterNdc.x * 0.5f, jitterNdc.y * 0.5f, 0.f);
+        gfx::transitionImage(cmd, m_motion.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_motionPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_motionLayout, 0, 1, &m_motionSet, 0, nullptr);
+        vkCmdPushConstants(cmd, m_motionLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(mpc), &mpc);
+        vkCmdDispatch(cmd, (rext.width + 7) / 8, (rext.height + 7) / 8, 1);
+        gfx::transitionImage(cmd, m_motion.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+        // Last frame's bloom and tonemap read the DLSS output.
+        gfx::transitionImage(cmd, m_dlssOut.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT);
+        Dlss::EvalInputs in{};
+        in.color = {m_hdr.image, m_hdr.view, m_hdr.format, rext.width, rext.height, VK_IMAGE_ASPECT_COLOR_BIT};
+        in.depth = {m_depth.image, m_depth.view, m_depth.format, rext.width, rext.height, VK_IMAGE_ASPECT_DEPTH_BIT};
+        in.motion = {m_motion.image, m_motion.view, m_motion.format, rext.width, rext.height, VK_IMAGE_ASPECT_COLOR_BIT};
+        in.output = {m_dlssOut.image, m_dlssOut.view, m_dlssOut.format, ext.width, ext.height, VK_IMAGE_ASPECT_COLOR_BIT};
+        in.jitterX = jitterPx.x * settings.dlssJitterSign.x;
+        in.jitterY = jitterPx.y * settings.dlssJitterSign.y;
+        in.reset = !m_historyValid;
+        in.frameDeltaMs = m_frameDeltaMs;
+        m_dlss.evaluate(cmd, in);
+        gfx::transitionImage(cmd, m_dlssOut.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
     {
         // Previous frame: bloom + tonemap read m_post, the post pass read the other history buffer.
         for (gfx::Image* img : {&m_post, &m_history[0], &m_history[1]})
@@ -1437,10 +1565,12 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
         ppc.camRight = glm::vec4(r, 0.f);
         ppc.camUp = glm::vec4(u, 0.f);
         ppc.camForward = glm::vec4(f, 0.f);
-        ppc.params = glm::vec4(tanHalf, aspect, kNearPlane, settings.taa && m_historyValid ? 0.85f : 0.f);
-        ppc.camDelta = glm::vec4(scene.cameraOwnDelta, 0.f);
+        // With DLSS the input is already resolved and unjittered: no history blend, no jitter offset.
+        ppc.params = glm::vec4(tanHalf, aspect, kNearPlane, settings.taa && !m_dlssActive && m_historyValid ? 0.85f : 0.f);
+        ppc.camDelta = glm::vec4(scene.cameraOwnDelta, m_historyValid ? 1.f : 0.f);
         ppc.sun = glm::vec4(scene.sunPosRel, scene.sunRadius);
-        ppc.glare = glm::vec4(settings.sunGlare * 0.6f, jitterNdc.x * 0.5f, jitterNdc.y * 0.5f, settings.motionBlur);
+        const glm::vec2 postJitter = m_dlssActive ? glm::vec2(0.f) : jitterNdc * 0.5f;
+        ppc.glare = glm::vec4(settings.sunGlare * 0.6f, postJitter.x, postJitter.y, settings.motionBlur);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_postPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_postLayout, 0, 1, &m_postSets[m_historyIndex], 0, nullptr);
         vkCmdPushConstants(cmd, m_postLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ppc), &ppc);
@@ -1450,7 +1580,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
                              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         m_historyIndex = 1 - m_historyIndex;
-        m_historyValid = settings.taa;
+        m_historyValid = settings.taa || m_dlssActive;
         m_prevViewProj = viewProjClean;
         m_prevCamPos = camera.position;
         ++m_frameSerial;
@@ -1479,14 +1609,14 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
         color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 
         VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-        ri.renderArea = scissor;
+        ri.renderArea = outScissor;
         ri.layerCount = 1;
         ri.colorAttachmentCount = 1;
         ri.pColorAttachments = &color;
         vkCmdBeginRendering(cmd, &ri);
 
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        vkCmdSetViewport(cmd, 0, 1, &outViewport);
+        vkCmdSetScissor(cmd, 0, 1, &outScissor);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemapPipeline);
         VkDescriptorSet tmSets[] = {m_tonemapSet, frame.frameSet};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemapLayout, 0, 2, tmSets, 0, nullptr);
@@ -1504,8 +1634,8 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             recordSwapchainCopy(cmd, m_swapchain.image(imageIndex), hdrBytes + bloomBytes);
             color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             vkCmdBeginRendering(cmd, &ri);
-            vkCmdSetViewport(cmd, 0, 1, &viewport);
-            vkCmdSetScissor(cmd, 0, 1, &scissor);
+            vkCmdSetViewport(cmd, 0, 1, &outViewport);
+            vkCmdSetScissor(cmd, 0, 1, &outScissor);
         }
 
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);

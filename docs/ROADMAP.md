@@ -66,6 +66,6 @@ Target hardware: RTX 50 series (Blackwell), Vulkan 1.3, Windows 11.
 
 ## Milestone 5: NVIDIA stack
 
-- Streamline: DLSS Super Resolution + Multi Frame Generation + Reflex
+- DLSS Super Resolution: done (NGX, Vulkan). Next: Multi Frame Generation + Reflex
 - Vulkan ray tracing for planet shadows and reflections; DLSS Ray Reconstruction
 - DLSS 5 (3D-Guided Neural Rendering) near planet surfaces once the SDK is public

@@ -106,6 +106,22 @@ void Context::createInstance(const Window& window, bool enableValidation) {
                 extensions.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
     }
 
+    if (instanceExtensionHook) {
+        uint32_t count = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
+        std::vector<VkExtensionProperties> available(count);
+        vkEnumerateInstanceExtensionProperties(nullptr, &count, available.data());
+        m_extraInstanceExts.clear();
+        instanceExtensionHook(m_extraInstanceExts);
+        for (const std::string& name : m_extraInstanceExts) {
+            bool have = false, dup = false;
+            for (auto& e : available) have |= name == e.extensionName;
+            for (const char* e : extensions) dup |= name == e;
+            if (!have) LOG_WARN("Instance extension {} not available", name);
+            else if (!dup) extensions.push_back(name.c_str());
+        }
+    }
+
     const char* validationLayer = "VK_LAYER_KHRONOS_validation";
     if (enableValidation) {
         if (hasLayer(validationLayer)) {
@@ -218,6 +234,16 @@ void Context::createDevice() {
     // Promoted to core in 1.3, but the ImGui backend resolves the KHR entry point by name.
     if (hasDeviceExtension(m_physicalDevice, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME))
         extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    if (deviceExtensionHook) {
+        m_extraDeviceExts.clear();
+        deviceExtensionHook(m_instance, m_physicalDevice, m_extraDeviceExts);
+        for (const std::string& name : m_extraDeviceExts) {
+            bool dup = false;
+            for (const char* e : extensions) dup |= name == e;
+            if (!hasDeviceExtension(m_physicalDevice, name.c_str())) LOG_WARN("Device extension {} not available", name);
+            else if (!dup) extensions.push_back(name.c_str());
+        }
+    }
 
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f2;

@@ -22,7 +22,7 @@ layout(push_constant) uniform PushConstants {
     mat4 viewProj;     // this frame, unjittered
     vec4 camRight, camUp, camForward;
     vec4 params;   // x tan(fov/2), y aspect, z near plane, w history blend (0 = no history)
-    vec4 camDelta; // xyz camera movement since last frame (world), w unused
+    vec4 camDelta; // xyz camera movement since last frame (world), w 1 when a history frame exists
     vec4 sun;      // xyz camera-relative Sun position, w Sun radius (world)
     vec4 glare;    // x strength, y jitter u, z jitter v, w motion blur amount
 } pc;
@@ -96,7 +96,7 @@ void main() {
     // The visible fraction of the solar disc is smoothed over time (kept in the history alpha), so
     // a sunrise over a limb brightens steadily instead of flickering as depth taps flip.
     vec3 resolved = color;
-    float visPrev = pc.params.w > 0.0 ? texture(uHistory, uv).a : -1.0;
+    float visPrev = pc.camDelta.w > 0.0 ? texture(uHistory, uv).a : -1.0; // w: a history exists
     float visOut = 0.0;
     if (pc.glare.x > 0.0) {
         vec4 sc = pc.viewProj * vec4(pc.sun.xyz, 1.0);

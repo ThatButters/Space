@@ -156,6 +156,14 @@ Surface stops happen in local morning light. The tour runs the clock forward as 
 and "go to" jumps it. Each Apollo site has its Lunar Flag Assembly beside the lander. Spacecraft cast
 shadows (4096² sun-aligned depth map) on the ground and on themselves.
 
+## DLSS
+
+With the NGX SDK dropped into `external/dlss` (see its README) and an RTX GPU, the scene renders at DLSS's
+internal resolution (Quality mode: 2/3 of the display) with the same sub-pixel jitter the TAA used, a
+depth-derived motion-vector pass feeds DLSS, and it reconstructs the display-size image that bloom and
+tonemapping consume. The F1 panel has the toggle and quality (performance .. DLAA); `--no-dlss` and
+`--dlss N` (0-4) from the command line. Without the SDK the engine's own TAA is used.
+
 ## HDR
 
 On an HDR display the swapchain is scRGB (RGBA16F) and the Sun, bright stars and bloom use the
@@ -185,7 +193,7 @@ src/render   frame orchestration: sky -> HDR -> tonemap -> UI
 src/scene    camera (double precision, quaternion)
 src/app      main loop and debug UI
 shaders/     GLSL, compiled to SPIR-V by glslc at build time
-external/    NVIDIA Streamline drop-in (see external/streamline/README.md)
+external/    NVIDIA DLSS SDK drop-in (see external/dlss/README.md)
 docs/        ROADMAP.md
 ```
 
