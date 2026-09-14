@@ -700,7 +700,7 @@ void Renderer::createPipelines() {
     atmo.layout = m_atmoLayout;
     atmo.blend = gfx::BlendMode::PremultipliedOver;
     atmo.depthWrite = false;
-    atmo.cullBack = true;
+    atmo.cullBack = false; // both faces: the fragment shader keeps the near faces outside, the far faces inside
     atmo.cullFront = false;
     m_atmoPipeline = gfx::createGraphicsPipeline(*m_ctx, atmo);
 
@@ -1213,7 +1213,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             bpc.shadowMat = scene.shadowMatrix;
             bpc.shadowInfo = shadowInfo;
             bpc.anchorWorld = glm::vec4(scene.detailAnchorWorld, (float)scene.detailBody);
-            bpc.anchorLocal = glm::vec4(scene.detailAnchorLocal, 0.f);
+            bpc.anchorLocal = glm::vec4(scene.detailAnchorLocal, (float)scene.sphereCount);
             bpc.patchAnchor = scene.patchAnchor;
             bpc.patchEast = scene.patchEast;
             bpc.patchNorth = scene.patchNorth;
@@ -1381,10 +1381,10 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
         ppc.camRight = glm::vec4(r, 0.f);
         ppc.camUp = glm::vec4(u, 0.f);
         ppc.camForward = glm::vec4(f, 0.f);
-        ppc.params = glm::vec4(tanHalf, aspect, kNearPlane, settings.taa && m_historyValid ? 0.9f : 0.f);
-        ppc.camDelta = glm::vec4(glm::vec3(camera.position - m_prevCamPos), 0.f);
+        ppc.params = glm::vec4(tanHalf, aspect, kNearPlane, settings.taa && m_historyValid ? 0.85f : 0.f);
+        ppc.camDelta = glm::vec4(scene.cameraOwnDelta, 0.f);
         ppc.sun = glm::vec4(scene.sunPosRel, scene.sunRadius);
-        ppc.glare = glm::vec4(settings.sunGlare * 0.6f, -jitterNdc.x * 0.5f, -jitterNdc.y * 0.5f, 0.f);
+        ppc.glare = glm::vec4(settings.sunGlare * 0.6f, jitterNdc.x * 0.5f, jitterNdc.y * 0.5f, 0.f);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_postPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_postLayout, 0, 1, &m_postSets[m_historyIndex], 0, nullptr);
         vkCmdPushConstants(cmd, m_postLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ppc), &ppc);

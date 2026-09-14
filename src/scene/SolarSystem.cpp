@@ -132,7 +132,7 @@ SolarSystem::SolarSystem() {
     int earth = planet("Earth", BodyType::Earth, 6371.0, 2, 23.934, 23.44, {0.05f, 0.25f, 0.55f}, 3.f, 1.0f);
     // The Moon's mean longitude gives a roughly correct phase: L = 218.316 + 13.176396 d (deg).
     moon("Moon", earth, 1737.4, 384400, 27.321582, glm::radians(218.316), {0.42f, 0.41f, 0.40f}, 4.f);
-    int mars = planet("Mars", BodyType::Rocky, 3389.5, 3, 24.623, 25.19, {0.72f, 0.40f, 0.25f}, 5.f, 0.15f);
+    int mars = planet("Mars", BodyType::Rocky, 3389.5, 3, 24.623, 25.19, {0.72f, 0.40f, 0.25f}, 5.f, 0.6f);
     moon("Phobos", mars, 11.1, 9376, 0.3189, 0.0, {0.35f, 0.32f, 0.30f}, 6.f);
     moon("Deimos", mars, 6.2, 23463, 1.2624, 1.5, {0.38f, 0.35f, 0.32f}, 7.f);
     int jupiter = planet("Jupiter", BodyType::GasGiant, 69911, 4, 9.925, 3.13, {0.80f, 0.68f, 0.52f}, 8.f, 0.3f);

@@ -69,6 +69,9 @@ struct FrameScene {
     glm::vec3 sunPosRel{0.f}; // camera-relative
     float sunRadiance = 1.f;
     float sunRadius = 0.f;    // world units
+    // The camera's own movement this frame (world units), excluding riding along with a body or craft:
+    // what the temporal resolve reprojects the previous frame with.
+    glm::vec3 cameraOwnDelta{0.f};
     // Spacecraft instances (index = craft index) and which model each one uses.
     std::vector<CraftGpu> crafts;
     std::vector<int> craftModels; // model index per craft, -1 = skip

@@ -31,7 +31,7 @@ layout(push_constant) uniform PushConstants {
     mat4 shadowMat;   // camera-relative world -> shadow map clip (xy -1..1, z reversed depth)
     vec4 shadowInfo;  // x shadow texture index (-1 = none), y 1 / resolution, z depth bias, w metres per world unit
     vec4 anchorWorld; // xyz camera-relative surface anchor, w index of the body it sits on (-1 = none)
-    vec4 anchorLocal; // xyz the anchor in body-local metres modulo 4096
+    vec4 anchorLocal; // xyz the anchor in body-local metres modulo 4096, w number of sphere bodies
     vec4 patchAnchor; // xy anchor uv in the active terrain patch, z du per metre east, w dv per metre north
     vec4 patchEast;   // xyz body-local east at the anchor
     vec4 patchNorth;  // xyz body-local north at the anchor
@@ -480,6 +480,27 @@ void main() {
     // Inverse-square from the Sun normalised to 1 at Earth, compressed so the outer planets stay visible.
     const float AU = 4.848e-6;
     float irradiance = pow((AU * AU) / sunDist2, 0.3);
+    // Eclipses and transits: any other body between this point and the Sun covers part of the solar disc
+    // (the Moon's shadow on Earth, Io's on Jupiter, Earth's on the Moon).
+    {
+        float sunAng = asin(clamp(bodies[0].posRadius.w * inversesqrt(sunDist2), 0.0, 1.0));
+        int count = int(pc.anchorLocal.w);
+        for (int j = 1; j < count; ++j) {
+            if (j == vBody) continue;
+            vec3 rel = bodies[j].posRadius.xyz - hit;
+            float dist2 = dot(rel, rel);
+            if (dist2 >= sunDist2 || dist2 <= 0.0) continue;
+            float dist = sqrt(dist2);
+            float along = dot(rel, L);
+            if (along <= 0.0) continue;
+            float bodyAng = asin(clamp(bodies[j].posRadius.w / dist, 0.0, 1.0));
+            float sep = acos(clamp(along / dist, -1.0, 1.0));
+            if (sep > bodyAng + sunAng) continue;
+            float covered = clamp((bodyAng + sunAng - sep) / (2.0 * sunAng), 0.0, 1.0);
+            float maxCover = min(1.0, (bodyAng * bodyAng) / max(sunAng * sunAng, 1e-12));
+            irradiance *= 1.0 - covered * maxCover;
+        }
+    }
     float diffuse;
     if (type == ROCKY && b.params.z <= 0.0) {
         // Airless regolith (Lunar-Lambert): mostly Lommel-Seeliger, so the full Moon stays bright to the
@@ -521,6 +542,15 @@ void main() {
         float spec = pow(max(dot(N, H), 0.0), 60.0) * ocean * 0.12;
         float clouds = b.tex.z >= 0 ? sampleMap(b.tex.z, uv + vec2(time * 0.0004, 0.0)).r
                                     : smoothstep(0.55, 0.75, fbm(p * 5.0 + vec3(time * 0.004, 0.0, 0.0) + seed * 5.0, 5));
+        // Below the cloud map's ~5 km pixels, break the edges up with fine cellular structure (only when the
+        // camera is close enough for a map pixel to span several screen pixels).
+        float cloudDetail = 1.0 - smoothstep(600.0, 2500.0, footprintM);
+        if (cloudDetail > 0.0 && clouds > 0.01) {
+            vec3 pd = p + vec3(time * 0.0004 * 6.2831853, 0.0, 0.0);
+            float fine = fbm(pd * 1500.0, 4) * 0.6 + fbm(pd * 6000.0, 3) * 0.4;
+            float shaped = smoothstep(0.18, 0.85, clouds + (fine - 0.5) * 0.9 * (1.0 - clouds * 0.5));
+            clouds = mix(clouds, shaped * (0.75 + 0.25 * clouds), cloudDetail);
+        }
         color = mix(color, vec3(1.0) * diffuse * irradiance, clouds * 0.9) + spec * irradiance;
         float night = smoothstep(0.05, -0.15, dot(N, L));
         vec3 lights = b.tex.y >= 0 ? sampleMap(b.tex.y, uv).rgb * vec3(1.0, 0.9, 0.75)

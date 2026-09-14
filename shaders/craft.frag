@@ -11,6 +11,7 @@ struct Craft {
     vec4 tint;
     vec4 up;
     vec4 extra; // x size, y sunlit fraction, z metres per model unit, w glint allowed
+    vec4 crop;      // x model-space Y cutoff
 };
 layout(std430, set = 0, binding = 0) readonly buffer Crafts { Craft crafts[]; };
 layout(set = 1, binding = 0) uniform sampler2D uTex[1024];
@@ -100,6 +101,7 @@ mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
 
 void main() {
     Craft c = crafts[pc.ids.x];
+    if (vModelPos.y > c.crop.x) discard;
     vec4 base = pc.baseColor;
     if (pc.ids.y >= 0) base *= texture(uTex[nonuniformEXT(pc.ids.y)], vUv);
     if (base.a < 0.35) discard; // cut-out materials (array blankets, grilles)

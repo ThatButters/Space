@@ -107,7 +107,13 @@ void main() {
     if (type == 2)      { betaR = vec3(1.4, 3.3, 8.0);  betaM = 0.4; H = 0.012; } // Earth
     else if (type == 3) { betaR = vec3(0.5, 0.7, 1.0);  betaM = 0.3; H = 0.008; } // gas giants: thin, warm haze
     else if (type == 4) { betaR = vec3(0.8, 1.8, 3.2);  betaM = 0.5; H = 0.012; } // ice giants
-    else                { betaR = vec3(3.0, 2.4, 1.6);  betaM = 1.0; H = 0.010; } // Venus / Mars / Titan
+    else {
+        // Dusty air (Venus / Mars / Titan): scattering takes the planet's own tint, so Mars gets its
+        // butterscotch daytime sky and blue-tinged sunsets, Titan its orange haze.
+        vec3 tint = normalize(b.color.rgb + 0.05) * 1.7;
+        betaR = vec3(3.0, 2.4, 1.6) * mix(vec3(1.0), tint, 0.7);
+        betaM = 1.0; H = 0.010;
+    }
     betaR *= strength;
     betaM *= strength;
 
@@ -118,6 +124,10 @@ void main() {
     vec3 rd = normalize(vWorldPos); // view ray from the camera through this fragment
     float Ra = pc.params.z;             // shell radius (planet = 1)
 
+    // From outside only the near (front) faces of the shell are drawn; from inside only the far faces, so
+    // the sky over a planet's surface is the same integral seen from within.
+    bool inside = dot(ro, ro) < Ra * Ra;
+    if (inside == gl_FrontFacing) discard;
     vec2 hit = raySphere(ro, rd, Ra);
     if (hit.y <= 0.0) discard;
     float tA = max(hit.x, 0.0), tB = hit.y;
@@ -163,6 +173,10 @@ void main() {
             vec3 sl = normalize(rotateInv(b.rotation, sunDir));
             float night = shadowed ? 1.0 : 0.25;
             auroraLight += exp(-betaR * odView) * aurora(pl, sl, h, pc.params.x, pc.params.w) * ds * night;
+            // Airglow: the faint green oxygen layer near 90 km that rims the night limb in photos from orbit.
+            float kmA = h * 6371.0;
+            float glow = exp(-pow((kmA - 92.0) / 9.0, 2.0)) * (shadowed ? 1.0 : 0.15);
+            auroraLight += exp(-betaR * odView) * vec3(0.18, 0.55, 0.28) * glow * ds * 0.012;
         }
     }
 

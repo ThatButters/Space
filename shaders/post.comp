@@ -1,0 +1,131 @@
+#version 460
+// Post-process resolve: temporal anti-aliasing plus the Sun's glare, in one dispatch.
+//
+// TAA: the scene is rendered with a sub-pixel jitter each frame; here every pixel is reprojected into the
+// previous frame through the depth buffer (or as a pure direction for the sky) and blended with the history,
+// clamped to the current frame's 3x3 neighbourhood so moving things do not smear. Edges, crater rims,
+// truss work and ring gaps converge to a stable, anti-aliased result over a few frames.
+//
+// Glare: a soft halo and faint streaks around the Sun, weighted by how much of the solar disc is unoccluded
+// (depth taps across the disc) and fading as the Sun leaves the frame.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uHdr;      // this frame, jittered
+layout(set = 0, binding = 1) uniform sampler2D uDepth;    // reversed, 0 = infinity
+layout(set = 0, binding = 2) uniform sampler2D uHistory;  // last frame's resolve
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D uOut;
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D uHistoryOut;
+
+layout(push_constant) uniform PushConstants {
+    mat4 prevViewProj; // last frame, unjittered
+    mat4 viewProj;     // this frame, unjittered
+    vec4 camRight, camUp, camForward;
+    vec4 params;   // x tan(fov/2), y aspect, z near plane, w history blend (0 = no history)
+    vec4 camDelta; // xyz camera movement since last frame (world), w unused
+    vec4 sun;      // xyz camera-relative Sun position, w Sun radius (world)
+    vec4 glare;    // x strength, y jitter u, z jitter v, w unused
+} pc;
+
+vec3 viewRay(vec2 uv) {
+    vec2 ndc = uv * 2.0 - 1.0; // Vulkan: y down
+    return normalize(pc.camForward.xyz + ndc.x * pc.params.x * pc.params.y * pc.camRight.xyz - ndc.y * pc.params.x * pc.camUp.xyz);
+}
+
+void main() {
+    ivec2 size = imageSize(uOut);
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= size.x || gid.y >= size.y) return;
+    vec2 texel = 1.0 / vec2(size);
+    vec2 uv = (vec2(gid) + 0.5) * texel;
+
+    // The jittered render is sampled at its true (unjittered) pixel centre.
+    vec2 uvJ = uv + pc.glare.yz;
+    vec3 current = texture(uHdr, uvJ).rgb;
+
+    // Neighbourhood bounds for clamping the history.
+    vec3 lo = current, hi = current;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            vec3 c = texture(uHdr, uvJ + vec2(x, y) * texel).rgb;
+            lo = min(lo, c);
+            hi = max(hi, c);
+        }
+
+    // Reproject.
+    float d = texture(uDepth, uvJ).r;
+    vec3 dir = viewRay(uv);
+    vec4 prevClip;
+    if (d <= 0.0) {
+        prevClip = pc.prevViewProj * vec4(dir, 0.0); // infinitely far: direction only
+    } else {
+        // Depth is near / (distance along the forward axis), so scale by the ray's forward component.
+        float zView = pc.params.z / d;
+        vec3 p = dir * (zView / max(dot(dir, pc.camForward.xyz), 1e-4)) + pc.camDelta.xyz;
+        prevClip = pc.prevViewProj * vec4(p, 1.0);
+    }
+    vec3 color = current;
+    float blend = pc.params.w;
+    if (blend > 0.0 && prevClip.w > 1e-30) {
+        vec2 prevUv = prevClip.xy / prevClip.w * 0.5 + 0.5;
+        if (all(greaterThanEqual(prevUv, vec2(0.0))) && all(lessThanEqual(prevUv, vec2(1.0)))) {
+            vec3 hist = texture(uHistory, prevUv).rgb;
+            // Clamp with a little slack so bright stars keep their glow between frames.
+            vec3 slack = (hi - lo) * 0.25 + 1e-4;
+            hist = clamp(hist, lo - slack, hi + slack);
+            color = mix(current, hist, blend);
+        }
+    }
+    // ---- Sun glare -------------------------------------------------------------------------
+    // The visible fraction of the solar disc is smoothed over time (kept in the history alpha), so
+    // a sunrise over a limb brightens steadily instead of flickering as depth taps flip.
+    vec3 resolved = color;
+    float visPrev = pc.params.w > 0.0 ? texture(uHistory, uv).a : -1.0;
+    float visOut = 0.0;
+    if (pc.glare.x > 0.0) {
+        vec4 sc = pc.viewProj * vec4(pc.sun.xyz, 1.0);
+        if (sc.w > 0.0) {
+            vec2 sunUv = sc.xy / sc.w * 0.5 + 0.5;
+            vec2 sunUvJ = sunUv + pc.glare.yz; // where the jittered depth buffer has the Sun
+            float sunDist = length(pc.sun.xyz);
+            float radiusNdc = pc.sun.w / max(sunDist, 1e-30) / pc.params.x; // in units of the half-height
+            float sunDepth = pc.params.z / sunDist;
+            // Visible fraction of the disc: depth taps across it (anything nearer hides that part).
+            float vis = 0.0;
+            const int TAPS = 12;
+            for (int i = 0; i < TAPS; ++i) {
+                float a = 6.2831853 * float(i) / float(TAPS);
+                float r = (i % 2 == 0) ? 0.4 : 0.85;
+                vec2 tapUv = sunUvJ + vec2(cos(a) / pc.params.y, sin(a)) * radiusNdc * 0.5 * r;
+                if (any(lessThan(tapUv, vec2(0.0))) || any(greaterThan(tapUv, vec2(1.0)))) continue;
+                float dd = texture(uDepth, tapUv).r;
+                vis += (dd <= sunDepth * 1.02) ? 1.0 : 0.0;
+            }
+            vis /= float(TAPS);
+            // Fade as the Sun leaves the frame.
+            vec2 edge = min(sunUv, 1.0 - sunUv);
+            vis *= smoothstep(-0.25, 0.05, min(edge.x, edge.y));
+            if (visPrev >= 0.0) vis = mix(vis, visPrev, 0.9);
+            visOut = vis;
+            if (vis > 0.001) {
+                vec2 dv = (uv - sunUv) * vec2(pc.params.y, 1.0); // aspect-corrected, in half-heights
+                float r = length(dv);
+                float halo = 1.0 / (1.0 + pow(r / 0.11, 2.2));
+                float wide = 0.18 / (1.0 + pow(r / 0.9, 2.0));
+                float ang = atan(dv.y, dv.x);
+                float streaks = 0.0;
+                for (int k = 0; k < 6; ++k) {
+                    float sa = ang - float(k) * 0.5235988 + 0.2; // 30 deg apart, slightly rotated
+                    float perp = abs(r * sin(sa));
+                    float along = r * cos(sa);
+                    streaks += exp(-perp / (0.0035 + 0.02 * r)) * exp(-abs(along) / 0.55) * (k % 2 == 0 ? 1.0 : 0.55);
+                }
+                vec3 tint = mix(vec3(1.0, 0.92, 0.8), vec3(0.85, 0.9, 1.0), clamp(r * 1.5, 0.0, 1.0));
+                float g = pc.glare.x * vis * (halo * 2.2 + wide + streaks * 0.35);
+                color += tint * g;
+            }
+        }
+    }
+    imageStore(uHistoryOut, gid, vec4(resolved, visOut));
+    imageStore(uOut, gid, vec4(color, 1.0));
+}

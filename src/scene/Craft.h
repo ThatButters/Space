@@ -15,6 +15,7 @@ struct CraftGpu {
     glm::vec4 tint;   // rgb multiplier, w ground albedo under a lander (0 in space)
     glm::vec4 up;     // xyz away from the parent body, w 1 near a body
     glm::vec4 extra;  // x size (world units), y sunlit fraction, z metres per model unit, w glint allowed
+    glm::vec4 crop;   // x model-space Y cutoff (1e9 = none)
 };
 
 enum class CraftPlacement { Surface, Orbit, Lagrange, Heliocentric, HeliocentricEllipse };
@@ -26,6 +27,7 @@ struct Craft {
     std::string modelFallback; // used when `model` is not on disk (the older NASA GLB)
     float modelYawDeg = 0.f;   // extra rotation about model +Y, for sources with a different forward axis
     float modelPitchDeg = 0.f; // then about model +X
+    float cropAboveY = 1e9f;   // model-space Y above which the mesh is not drawn (stages that left)
     float sizeMeters = 10.f; // largest dimension after scaling
     CraftPlacement placement = CraftPlacement::Surface;
     int parent = -1;   // body index

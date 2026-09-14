@@ -9,6 +9,7 @@ struct Craft {
     vec4 tint;
     vec4 up;
     vec4 extra;  // x size (world units), y sunlit fraction, z metres per model unit, w glint allowed
+    vec4 crop;      // x model-space Y cutoff
 };
 layout(std430, set = 0, binding = 0) readonly buffer Crafts { Craft crafts[]; };
 

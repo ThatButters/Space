@@ -125,6 +125,9 @@ void CraftCatalog::build(const SolarSystem& solar) {
         c.modelPitchDeg = pitch;
     };
     // Morning light puts the camera north or south of the lander, so the cloth faces roughly that way.
+    // Only the descent stages stayed on the Moon: cut the ascent stage off the NASA model.
+    for (Craft& c : m_crafts)
+        if (c.model == "apollo_lm.glb") c.cropAboveY = 2.42f;
     flag("Apollo 11 (Tranquility Base)", -8.5, 3.0, 350);
     flag("Apollo 12", -11.0, -4.0, 12);
     flag("Apollo 14", -9.0, 8.0, 344);
@@ -357,6 +360,7 @@ void CraftCatalog::buildGpuList(const SolarSystem& solar, const glm::dvec3& came
             }
         }
         g.sunDir.w *= sunlit;
+        g.crop = glm::vec4(c.cropAboveY, 0.f, 0.f, 0.f);
         g.extra = glm::vec4((float)(c.sizeMeters / kMetersPerParsec), sunlit, c.sizeMeters / native,
                             c.listed && c.placement != CraftPlacement::Surface ? 1.f : 0.f);
         g.tint = glm::vec4(1.f, 1.f, 1.f, ground);
@@ -385,7 +389,7 @@ void CraftCatalog::viewpoint(const SolarSystem& solar, int index, double distanc
     case CraftPlacement::Surface:
         // Cross-lit from low on the ground, like a crew photograph: the Sun off to one side so the
         // shadows stretch across the frame instead of hiding behind the lander.
-        dir = glm::normalize(side * 0.85 + sunFlat * 0.2 + up * 0.22);
+        dir = glm::normalize(side * 0.8 + sunFlat * 0.2 + up * 0.6); // three-quarters from above
         break;
     case CraftPlacement::Orbit: {
         // Trailing just behind and above the orbiter, off its sunlit flank: we ride along with it, the
@@ -413,7 +417,7 @@ double CraftCatalog::viewDistanceSizes(int index) const {
     const double size = m_crafts[index].sizeMeters;
     if (size >= 60.0) return 0.7; // the ISS: ~100 m from its centre, modules and arrays filling the frame
     if (size >= 15.0) return 2.0;
-    return 2.8;
+    return m_crafts[index].placement == CraftPlacement::Surface ? 1.35 : 2.8; // landers: standing beside them
 }
 
 void CraftCatalog::orbitFrame(const SolarSystem& solar, int index, glm::dvec3& alongTrack, glm::dvec3& up) const {

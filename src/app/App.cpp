@@ -578,6 +578,13 @@ void App::drawOverlay(double dt) {
             const float w1 = width(title, titlePx, t1), w2 = width(font, subPx, t2);
             text(title, titlePx, ImVec2((w - w1) * 0.5f, h * 0.30f), IM_COL32(255, 255, 255, (int)(a * 235)), t1);
             text(font, subPx, ImVec2((w - w2) * 0.5f, h * 0.30f + titlePx + 6.f * scale), IM_COL32(220, 225, 240, (int)(a * 200)), t2);
+            // Credit, arriving a beat after the title.
+            const float ac = (float)std::clamp(std::min((p - 0.2) / 0.15, (0.85 - p) / 0.15), 0.0, 1.0);
+            if (ac > 0.f) {
+                const char* t3 = "a Beeman daydream, 2026";
+                const float w3 = width(font, smallPx, t3);
+                text(font, smallPx, ImVec2((w - w3) * 0.5f, h - pad - smallPx * 3.2f), IM_COL32(200, 205, 225, (int)(ac * 170)), t3);
+            }
         }
     }
 
@@ -707,6 +714,7 @@ int App::run() {
         const glm::dvec3 inputDelta = m_camera.position - posBefore;
         updateScene(dt);
         m_cameraVelocity = (inputDelta + m_tourDelta) / std::max(dt, 1e-4);
+        m_frameScene.cameraOwnDelta = glm::vec3(inputDelta + m_tourDelta);
         updateConstellations(dt);
 
         ++m_frameCounter;
