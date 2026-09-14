@@ -137,6 +137,7 @@ public:
     int addModel(const gfx::ModelData& model);
     float modelExtent(int index) const { return m_models[index].extent; }
     float modelMinY(int index) const { return m_models[index].minY; }
+    glm::vec3 modelBoundsCenter(int index) const { return m_models[index].center; }
 
     // Registers a texture in the bindless array; returns its index (or -1 if the array is full).
     // clampU: for tiles of a larger map (no longitude wrap inside a tile).
@@ -303,6 +304,7 @@ private:
         std::vector<gfx::ModelPrimitive> primitives; // imageIndex remapped to texture-array indices
         float extent = 1.f;
         float minY = 0.f;
+        glm::vec3 center{0.f};
         bool flame = false;
     };
     std::vector<ModelGpu> m_models;

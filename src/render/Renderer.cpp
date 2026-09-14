@@ -834,6 +834,7 @@ int Renderer::addModel(const gfx::ModelData& model) {
                                         VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     m.extent = model.extent();
     m.minY = model.boundsMin.y;
+    m.center = (model.boundsMin + model.boundsMax) * 0.5f;
     m.flame = model.volumetricFlame;
     std::vector<int> imageToTexture(model.images.size(), -1);
     for (size_t i = 0; i < model.images.size(); ++i) {

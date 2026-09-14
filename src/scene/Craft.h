@@ -29,6 +29,7 @@ struct Craft {
     float modelPitchDeg = 0.f; // then about model +X
     float cropAboveY = 1e9f;   // model-space Y above which the mesh is not drawn (stages that left)
     bool noLift = false;       // generated scenery already placed relative to the ground
+    glm::vec3 modelOffset{0.f}; // shift in the model's own (pitched) frame, model units
     // Live two-line elements (CelesTrak): circular-orbit propagation with J2 node regression.
     bool tle = false;
     double tleEpochJd = 0.0, tleIncDeg = 0.0, tleRaanDeg = 0.0, tleArgLatDeg = 0.0, tleMeanMotion = 15.5;

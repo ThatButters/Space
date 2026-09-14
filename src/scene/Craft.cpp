@@ -114,9 +114,9 @@ void CraftCatalog::build(const SolarSystem& solar) {
     surface("InSight", "insight.glb", 6.0f, "Mars", 4.502, 135.623, 0, "Elysium Planitia, 2018-2022");
     surface("Huygens", "huygens.glb", 2.7f, "Titan", -10.3, 167.7, 0, "Landed on Titan, January 2005");
     // A Saturn V two minutes into an Apollo launch, 9 km over the Atlantic off Kennedy, pitched downrange.
-    surface("Saturn V", "saturn_v.glb", 111.f, "Earth", 28.62, -80.45, 72, "Apollo launch, T+2 min: 2,700 tonnes leaving Earth");
-    m_crafts.back().altitudeKm = 9.5;
-    m_crafts.back().modelPitchDeg = -38.f;
+    surface("Saturn V", "saturn_v.glb", 111.f, "Earth", 28.95, -79.65, 72, "Apollo launch, T+2:20: 60 km up, first stage still burning");
+    m_crafts.back().altitudeKm = 60.0;
+    m_crafts.back().modelPitchDeg = -58.f;
     {
         Craft plume = m_crafts.back();
         plume.name = "Saturn V plume";
@@ -364,7 +364,7 @@ void CraftCatalog::buildGpuList(const SolarSystem& solar, const glm::dvec3& came
                               glm::angleAxis(glm::radians(c.modelPitchDeg), glm::vec3(1, 0, 0));
         glm::mat4 m = glm::translate(glm::mat4(1.f), glm::vec3(c.position - cameraPos)) *
                       glm::mat4_cast(c.rotation) * glm::scale(glm::mat4(1.f), glm::vec3(scale)) *
-                      glm::mat4_cast(fix) * glm::translate(glm::mat4(1.f), glm::vec3(0.f, lift, 0.f));
+                      glm::mat4_cast(fix) * glm::translate(glm::mat4(1.f), glm::vec3(0.f, lift, 0.f) + c.modelOffset);
         CraftGpu g;
         g.model = m;
         glm::dvec3 toSun = solar.sunPosition() - c.position;

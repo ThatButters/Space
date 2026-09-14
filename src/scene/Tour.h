@@ -69,7 +69,8 @@ private:
     int m_fromBody = -1;
     int m_fromCraft = -1; // departing from beside a spacecraft: ride along with it, not with its planet
     glm::dvec3 m_fromOffset{0.0};
-    glm::dvec3 departurePoint(const SolarSystem& solar) const;
+    glm::dvec3 departurePoint(const SolarSystem& solar, double s) const;
+    glm::dvec3 m_fromBodyOffset{0.0}; // the start point fixed in the departure body's frame
     glm::quat m_fromOrient{1.f, 0.f, 0.f, 0.f};
     double m_orbitAngle = 0.0;
     int m_mode = 0;

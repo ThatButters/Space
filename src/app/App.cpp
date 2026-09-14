@@ -102,7 +102,7 @@ App::App(int argc, char** argv) {
             return Tour::Stop{c >= 0 ? m_crafts.crafts()[c].parent : -1, c};
         };
         std::vector<Tour::Stop> stops = {
-            craft("ISS"), craft("Saturn V"), body("Moon"), craft("Apollo 11 (Tranquility Base)"), craft("LRO"),
+            craft("Saturn V"), craft("ISS"), body("Moon"), craft("Apollo 11 (Tranquility Base)"), craft("LRO"),
             body("Mars"), craft("Perseverance"), craft("MRO"), body("Jupiter"), craft("Juno"), body("Io"),
             body("Saturn"), Tour::Stop{m_solar.find("Saturn"), -1, 1}, body("Titan"), craft("Huygens"), body("Uranus"), body("Neptune"),
             craft("Voyager 1"), body("Sun"), craft("Parker Solar Probe"), body("Mercury"), body("Venus"),
@@ -116,7 +116,17 @@ App::App(int argc, char** argv) {
     loadLiveClouds();
     startLiveFetch();
     if (m_tourStart >= 0) m_tour.start(m_solar, m_camera, (size_t)m_tourStart);
-    else if (m_startTour) m_tour.startWithIntro(m_solar, m_solar.find("Earth"));
+    else if (m_startTour) {
+        // The opening is dawn over Cape Canaveral, today: Sun ~5 deg below the Cape's horizon at the start,
+        // rising as we drift east. Sub-solar longitude then is about -80.6 + 95 deg east, i.e. 10:58 UTC.
+        const double today = std::floor(m_epochJd - 0.5) + 0.5; // 00:00 UTC
+        double jd = today + 10.97 / 24.0;
+        if (jd < m_epochJd - 0.6) jd += 1.0;
+        m_simDays = jd - m_epochJd;
+        m_solar.update(jd);
+        m_crafts.update(m_solar, jd);
+        m_tour.startWithIntro(m_solar, m_solar.find("Earth"));
+    }
     LOG_INFO("Ready. Hold right mouse to look, WASD/RF to fly, scroll to change speed, 0-9 visit bodies, F1 UI.");
 }
 
@@ -314,6 +324,17 @@ void App::loadModels() {
     }
     for (Craft& c : m_crafts.crafts()) {
         c.modelIndex = loaded[c.model];
+        if (c.name == "Saturn V plume") {
+            // Centre the flame on the rocket's axis, at its base (the rocket model is not centred on its origin).
+            const int rocket = m_crafts.find("Saturn V");
+            const int rm = rocket >= 0 ? loaded[m_crafts.crafts()[rocket].model] : -1;
+            if (rm >= 0) {
+                const glm::vec3 centre = m_renderer.modelBoundsCenter(rm);
+                const float scale = m_crafts.crafts()[rocket].sizeMeters / std::max(m_renderer.modelExtent(rm), 1e-6f);
+                // Metres (the plume model is in metres); raised 8 m so the flame starts inside the engine bells.
+                c.modelOffset = glm::vec3(centre.x * scale, 8.f, centre.z * scale);
+            }
+        }
         // Generated scenery is built in metres: keep it at its true size.
         if ((c.model == "__flag__" || c.model == "__plume__") && c.modelIndex >= 0) c.sizeMeters = m_renderer.modelExtent(c.modelIndex);
     }

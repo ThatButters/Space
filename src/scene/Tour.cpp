@@ -89,6 +89,7 @@ void Tour::beginFlight(const SolarSystem& solar, const Camera& camera) {
         }
     }
     m_fromOffset = camera.position - solar.body(m_fromBody).position;
+    m_fromBodyOffset = m_fromOffset;
     m_fromCraft = -1;
     if (m_active && previousCraft >= 0 && m_crafts && previousCraft < (int)m_crafts->crafts().size()) {
         const Craft& pc = m_crafts->crafts()[previousCraft];
@@ -146,9 +147,13 @@ void Tour::beginFlight(const SolarSystem& solar, const Camera& camera) {
     }
 }
 
-glm::dvec3 Tour::departurePoint(const SolarSystem& solar) const {
-    if (m_fromCraft >= 0 && m_crafts) return m_crafts->crafts()[m_fromCraft].position + m_fromOffset;
-    return solar.body(m_fromBody).position + m_fromOffset;
+glm::dvec3 Tour::departurePoint(const SolarSystem& solar, double s) const {
+    const glm::dvec3 fixed = solar.body(m_fromBody).position + m_fromBodyOffset;
+    if (m_fromCraft < 0 || !m_crafts) return fixed;
+    // Leaving a spacecraft: ride along with it at first so it slides out of view, then let it go (an
+    // orbiter moving at 7.7 km/s would otherwise drag the whole flight path around with it).
+    const glm::dvec3 ride = m_crafts->crafts()[m_fromCraft].position + m_fromOffset;
+    return glm::mix(ride, fixed, smooth(s / 0.35));
 }
 
 bool Tour::clockOverride(double& jd) const {
@@ -181,17 +186,14 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
         m_t += dt;
         const Body& e = solar.body(m_target);
         const double R = e.radiusKm / kKmPerParsec;
-        const glm::dvec3 s = glm::normalize(solar.sunPosition() - e.position);
-        glm::dvec3 n = glm::normalize(glm::dvec3(e.rotation * glm::vec3(0.f, 1.f, 0.f)));
-        n = glm::normalize(n - s * glm::dot(n, s));
-        const glm::dvec3 east = glm::normalize(glm::cross(n, s));
-        const glm::dvec3 w = glm::normalize(n * 0.75 - east * 0.66); // ~48 N on the morning side
+        // Drifting east at 650 km from over Texas to the Florida coast (the clock is set to dawn at the
+        // Cape), looking ahead and down at the sunrise and the launch below.
         const double k = smooth(m_t / introSeconds);
-        const double theta = glm::radians(104.0 - 16.0 * k);
-        const glm::dvec3 dir = s * std::cos(theta) + w * std::sin(theta);
+        const double lat = 30.5 - 1.5 * k, lon = -96.0 + 14.0 * k;
+        const glm::dvec3 dir = glm::normalize(e.rotationD * SolarSystem::latLonToLocal(lat, lon));
         camera.position = e.position + dir * (R + 650.0 / kKmPerParsec);
-        glm::dvec3 t = glm::normalize(s - dir * glm::dot(s, dir));
-        const glm::vec3 fwd = glm::normalize(glm::vec3(t - dir * 0.42));
+        const glm::dvec3 aim = e.position + glm::normalize(e.rotationD * SolarSystem::latLonToLocal(lat - 2.0, lon + 13.0)) * R;
+        const glm::vec3 fwd = glm::normalize(glm::vec3(aim - camera.position));
         const glm::quat want = glm::quatLookAt(fwd, glm::vec3(dir));
         camera.orientation = m_t < 0.05 ? want : glm::slerp(camera.orientation, want, (float)std::min(1.0, dt * 3.0));
         camera.speed = R * 0.02;
@@ -220,7 +222,7 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
             const glm::dvec3 centre = solar.body(craft.parent).position;
             if (m_t < m_duration * split) {
                 const double s = smooth(m_t / (m_duration * split));
-                const glm::dvec3 from = departurePoint(solar);
+                const glm::dvec3 from = departurePoint(solar, m_t / m_duration);
                 const glm::dvec3 target = craft.position + chaseRel;
                 const glm::dvec3 a = from - centre, b = target - centre;
                 const double ra = glm::length(a), rb = glm::length(b);
@@ -253,7 +255,7 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
         if (m_phase == Phase::Flight) {
             m_t += dt;
             const double s = smooth(m_t / m_duration);
-            const glm::dvec3 from = departurePoint(solar);
+            const glm::dvec3 from = departurePoint(solar, s);
             if (craft.parent >= 0 && craft.parent == m_fromBody) {
                 // Around the parent, never through it: slerp the direction, blend the radius in log space.
                 const glm::dvec3 centre = solar.body(craft.parent).position;
@@ -312,7 +314,7 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
         const double s = smooth(m_t / m_duration);
 
         // Start point keeps riding with the departure body; end point is the first orbit position.
-        const glm::dvec3 from = departurePoint(solar);
+        const glm::dvec3 from = departurePoint(solar, s);
         const glm::dvec3 to = target.position + orbitOffset(solar, m_target, m_orbitAngle);
 
         // A curve instead of a straight line: climb away from the body we leave along its local vertical

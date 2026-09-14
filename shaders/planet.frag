@@ -540,7 +540,8 @@ void main() {
     if (type == EARTH) {
         vec3 H = normalize(L + V);
         float spec = pow(max(dot(N, H), 0.0), 60.0) * ocean * 0.12;
-        float clouds = b.tex.z >= 0 ? sampleMap(b.tex.z, uv + vec2(time * 0.0004, 0.0)).r
+        // Clouds drift east at ~80 m/s (real weather, not a time-lapse).
+        float clouds = b.tex.z >= 0 ? sampleMap(b.tex.z, uv + vec2(time * 2e-6, 0.0)).r
                                     : smoothstep(0.55, 0.75, fbm(p * 5.0 + vec3(time * 0.004, 0.0, 0.0) + seed * 5.0, 5));
         if (b.tiles.w >= 0) {
             // Today's real cloud cover where the satellite passes have data; the static map elsewhere.
@@ -551,7 +552,7 @@ void main() {
         // camera is close enough for a map pixel to span several screen pixels).
         float cloudDetail = 1.0 - smoothstep(600.0, 2500.0, footprintM);
         if (cloudDetail > 0.0 && clouds > 0.01) {
-            vec3 pd = p + vec3(time * 0.0004 * 6.2831853, 0.0, 0.0);
+            vec3 pd = p + vec3(time * 2e-6 * 6.2831853, 0.0, 0.0);
             float fine = fbm(pd * 1500.0, 4) * 0.6 + fbm(pd * 6000.0, 3) * 0.4;
             // Mottle rather than shred: thin cloud stays thin, edges get structure.
             float shaped = clouds * clamp(0.45 + 1.1 * fine, 0.0, 1.4) * smoothstep(0.02, 0.25, clouds + (fine - 0.5) * 0.3);
