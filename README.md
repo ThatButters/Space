@@ -191,7 +191,7 @@ shaders/     GLSL (planet, atmosphere, craft, plume, stars, nebula, post, bloom,
 scripts/     fetch and bake pipelines for every data source above
 tools/       TexBake (DirectXTex GPU compressor)
 external/    NVIDIA DLSS SDK drop-in
-docs/        roadmap, screenshots
+docs/        PLAN.md (the build plan), ROADMAP.md, screenshots
 ```
 
 ## Status and roadmap
