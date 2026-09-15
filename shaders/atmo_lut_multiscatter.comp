@@ -13,7 +13,7 @@ layout(push_constant) uniform PushConstants { int cls; } pc;
 void main() {
     ivec2 id = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(id, ivec2(ATMO_MS_SIZE)))) return;
-    AtmoClass a = kAtmo[pc.cls];
+    AtmoClass a = atmoClass(pc.cls);
     float R = a.radiusKm, Rt = R + a.topKm;
     vec2 x = vec2(id) / (ATMO_MS_SIZE - 1.0);
     float muS = x.x * 2.0 - 1.0;

@@ -41,10 +41,26 @@ const AtmoClass kAtmo[ATMO_CLASSES] = AtmoClass[ATMO_CLASSES](
     AtmoClass(58232.0, 500.0, vec3(2.5e-4, 5.8e-4, 1.4e-3), 59.5, vec3(0.0005, 0.00047, 0.0004), 40.0, vec3(0.00006), 0.7,
               vec3(0.0), 0.0, 1.0, vec3(0.7, 0.62, 0.5)),
     AtmoClass(25362.0, 400.0, vec3(8.7e-4, 2.0e-3, 5.0e-3), 27.7, vec3(0.0003), 20.0, vec3(0.00004), 0.7,
-              vec3(0.002, 0.0004, 0.00007), -1.0, 1.0, vec3(0.5, 0.7, 0.75)),
+              vec3(0.002, 0.0004, 0.00007), 0.0, 55.0, vec3(0.5, 0.7, 0.75)),
     AtmoClass(24622.0, 400.0, vec3(8.7e-4, 2.0e-3, 5.0e-3), 19.7, vec3(0.0003), 20.0, vec3(0.00004), 0.7,
-              vec3(0.003, 0.0005, 0.0001), -1.0, 1.0, vec3(0.3, 0.45, 0.8))
+              vec3(0.003, 0.0005, 0.0001), 0.0, 40.0, vec3(0.3, 0.45, 0.8))
 );
+
+// One class's constants. Always go through this rather than kAtmo[i] with a runtime index: the compute
+// bakes read garbage for the last classes that way (the ice giants' tables came out NaN), while constant
+// indices fold cleanly.
+AtmoClass atmoClass(int c) {
+    switch (c) {
+    case 1: return kAtmo[1];
+    case 2: return kAtmo[2];
+    case 3: return kAtmo[3];
+    case 4: return kAtmo[4];
+    case 5: return kAtmo[5];
+    case 6: return kAtmo[6];
+    case 7: return kAtmo[7];
+    default: return kAtmo[0];
+    }
+}
 
 // Extinction at a height (km), with the scattering split into its Rayleigh and aerosol parts.
 vec3 atmoExtinction(AtmoClass a, float hKm, out vec3 scatR, out vec3 scatM) {

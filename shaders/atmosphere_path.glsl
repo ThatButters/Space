@@ -20,7 +20,7 @@ void atmoPathScatter(ivec4 atmoTex, vec3 ro, vec3 rd, float tEnd, vec3 sunDir, i
                      out vec3 inscatter, out vec3 transmittance) {
     inscatter = vec3(0.0);
     transmittance = vec3(1.0);
-    AtmoClass a = kAtmo[atmoTex.z];
+    AtmoClass a = atmoClass(atmoTex.z);
     float R = a.radiusKm, Rt = R + a.topKm;
     vec2 hit = atmoRaySphere(ro, rd, Rt);
     float tA = max(hit.x, 0.0), tB = min(hit.y, tEnd);

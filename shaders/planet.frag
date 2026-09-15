@@ -622,7 +622,7 @@ void main() {
     // (the colour band along the terminator, sunset light on the ground).
     vec3 sunT = vec3(1.0);
     if (b.atmoTex.x >= 0) {
-        AtmoClass ac = kAtmo[b.atmoTex.z];
+        AtmoClass ac = atmoClass(b.atmoTex.z);
         sunT = textureLod(uTex[nonuniformEXT(b.atmoTex.x)],
                           atmoTransmittanceUv(ac.radiusKm, ac.radiusKm + ac.topKm, ac.radiusKm + 0.05, dot(N, L)), 0.0).rgb;
     }
@@ -767,7 +767,7 @@ void main() {
     // Aerial perspective: the air between the camera and this point dims it (blue most) and adds its own
     // scattered light. The atmosphere shell pass only draws the sky beyond the ground.
     if (b.atmoTex.x >= 0 && vBoost <= 1.0) {
-        AtmoClass ac = kAtmo[b.atmoTex.z];
+        AtmoClass ac = atmoClass(b.atmoTex.z);
         float kmPerUnit = ac.radiusKm / b.posRadius.w;
         vec3 ins, tr;
         float jit = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)) + fract(time * 0.37) * 91.7) * 43758.5453);

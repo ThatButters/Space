@@ -179,7 +179,7 @@ void main() {
         float day = smoothstep(-0.08, 0.25, dot(up, sunDir)); // no sky fill on the night side
         vec3 sunT = vec3(1.0); // reddened near the terminator by the air above the clouds
         if (b.atmoTex.x >= 0) {
-            AtmoClass ac = kAtmo[b.atmoTex.z];
+            AtmoClass ac = atmoClass(b.atmoTex.z);
             sunT = textureLod(uTex[nonuniformEXT(b.atmoTex.x)],
                               atmoTransmittanceUv(ac.radiusKm, ac.radiusKm + ac.topKm, length(p) * ac.radiusKm, dot(up, sunDir)), 0.0).rgb;
         }
@@ -193,7 +193,7 @@ void main() {
     }
     if (b.atmoTex.x >= 0) {
         // Aerial perspective between the camera and the cloud (the ground behind carries its own).
-        AtmoClass ac = kAtmo[b.atmoTex.z];
+        AtmoClass ac = atmoClass(b.atmoTex.z);
         vec3 ins, tr;
         atmoPathScatter(b.atmoTex, ro * ac.radiusKm, rd, 0.5 * (t0 + t1) * ac.radiusKm, sunDir, 10, jitter, ins, tr);
         col = col * tr + ins * irradiance * PI * (1.0 - T);

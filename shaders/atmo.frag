@@ -105,7 +105,7 @@ void main() {
     int type = int(b.params.x + 0.5);
     int cls = b.atmoTex.z;
     if (cls < 0) discard;
-    AtmoClass a = kAtmo[cls];
+    AtmoClass a = atmoClass(cls);
     float R = a.radiusKm, Rt = R + a.topKm;
 
     // Geometry in kilometres, relative to the planet's centre.

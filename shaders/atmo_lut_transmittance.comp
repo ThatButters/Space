@@ -11,7 +11,7 @@ layout(push_constant) uniform PushConstants { int cls; } pc;
 void main() {
     ivec2 id = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(id, ivec2(ATMO_T_SIZE)))) return;
-    AtmoClass a = kAtmo[pc.cls];
+    AtmoClass a = atmoClass(pc.cls);
     float R = a.radiusKm, Rt = R + a.topKm;
     float r, mu;
     atmoTransmittanceParams(R, Rt, vec2(id), r, mu);
