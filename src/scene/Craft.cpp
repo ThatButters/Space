@@ -447,10 +447,31 @@ void CraftCatalog::viewpoint(const SolarSystem& solar, int index, double distanc
         const glm::dvec3 toEarth = glm::normalize(solar.body(solar.find("Earth")).position - c.position);
         glm::dvec3 earthFlat = toEarth - up * glm::dot(toEarth, up);
         earthFlat = glm::length(earthFlat) > 1e-6 ? glm::normalize(earthFlat) : sunFlat;
-        dir = glm::normalize(-earthFlat * 0.92 + up * 0.14 + side * 0.15);
-        // The lander sits a little left of centre, clear of the caption under it.
-        outPos = c.position + dir * (size * distanceSizes * 1.25);
-        const glm::dvec3 aim = viewAim(solar, index, outPos, glm::radians(85.f));
+        // Well off to one side of the line to Earth (~73 deg of bearing between them): Earth stands ~60 deg
+        // up, and anything that high crowds toward the top centre of an upward-looking frame, so it takes a
+        // wide separation for Earth to sit up to one side instead of under the tour strip. Of the two sides,
+        // take the one where the flag is not standing between the camera and the lander.
+        // Sideways relative to Earth's bearing (not the Sun's: at Hadley, Earth due south and the Sun due east,
+        // a Sun-based side would point straight along the line to Earth).
+        const glm::dvec3 sideE = glm::normalize(glm::cross(up, earthFlat));
+        glm::dvec3 best = -earthFlat * 0.3 + up * 0.14 + sideE * 1.0;
+        const int flagIdx = find(c.name + " flag");
+        if (flagIdx >= 0) {
+            const glm::dvec3 other = -earthFlat * 0.3 + up * 0.14 - sideE * 1.0;
+            const glm::dvec3 flagPos = m_crafts[flagIdx].position;
+            const double reach = size * distanceSizes * 1.8;
+            auto clearance = [&](const glm::dvec3& d) {
+                const glm::dvec3 cam = c.position + glm::normalize(d) * reach;
+                const glm::dvec3 seg = c.position - cam;
+                const double t = std::clamp(glm::dot(flagPos - cam, seg) / std::max(glm::dot(seg, seg), 1e-300), 0.0, 1.0);
+                return glm::length(flagPos - (cam + seg * t));
+            };
+            if (clearance(other) > clearance(best)) best = other;
+        }
+        dir = glm::normalize(best);
+        // ~23 m back, so the lander's foot sits near the horizon and Earth fits above it.
+        outPos = c.position + dir * (size * distanceSizes * 1.8);
+        const glm::dvec3 aim = viewAim(solar, index, outPos, glm::radians(90.f));
         outOrient = glm::quatLookAt(glm::normalize(glm::vec3(aim - outPos)), glm::vec3(up));
         return;
     }
@@ -500,16 +521,58 @@ bool CraftCatalog::earthInSky(const SolarSystem& solar, int index) const {
 glm::dvec3 CraftCatalog::viewAim(const SolarSystem& solar, int index, const glm::dvec3& cameraPos, float fovY) const {
     const Craft& c = m_crafts[index];
     if (!earthInSky(solar, index)) return c.position;
+    // Standing beside a lander with Earth ~55-70 deg up, the two span most of the frame height, and the tour
+    // strip (top centre) and caption (bottom centre) take the middle of each edge. Search bearing and pitch
+    // for a diagonal: Earth high to one side, the lander low on the other, both whole, neither under text.
     const glm::dvec3 up = skyUp(solar, index);
     const glm::dvec3 toEarth = glm::normalize(solar.body(solar.find("Earth")).position - c.position);
-    const double earthElev = std::asin(std::clamp(glm::dot(toEarth, up), -1.0, 1.0));
-    const double half = fovY * 0.5;
-    // Tilt up just enough to bring Earth inside the top of the frame, keeping the lander in the bottom.
-    const double lookElev = std::clamp(earthElev - half + glm::radians(3.0), 0.0, half - glm::radians(5.0));
-    // The aim point sits above the lander at the height that gives that elevation from where the camera is.
-    const glm::dvec3 rel = c.position - cameraPos;
-    const double flat = glm::length(rel - up * glm::dot(rel, up));
-    return cameraPos + (rel - up * glm::dot(rel, up)) + up * (flat * std::tan(lookElev));
+    const glm::dvec3 rel = c.position - cameraPos; // parsecs: tiny, so no absolute thresholds below
+    const double dist = glm::length(rel);
+    if (!(dist > 0.0)) return c.position;
+    const glm::dvec3 base = rel / dist;
+    const glm::dvec3 top = glm::normalize(rel + up * (c.sizeMeters * 0.55 / kMetersPerParsec));
+    glm::dvec3 landerFlat = base - up * glm::dot(base, up);
+    glm::dvec3 earthFlat = toEarth - up * glm::dot(toEarth, up);
+    if (!(glm::length(landerFlat) > 0.0) || glm::length(earthFlat) < 1e-9) return c.position;
+    landerFlat = glm::normalize(landerFlat);
+    earthFlat = glm::normalize(earthFlat);
+    const double tanV = std::tan(fovY * 0.5), tanH = tanV * (16.0 / 9.0); // judged on the narrowest screen expected
+    struct Ndc { double x, y; bool ok; };
+    auto project = [&](const glm::dvec3& d, const glm::dvec3& f, const glm::dvec3& r, const glm::dvec3& u) {
+        const double z = glm::dot(d, f);
+        if (z <= 1e-3) return Ndc{0.0, 0.0, false};
+        return Ndc{glm::dot(d, r) / z / tanH, glm::dot(d, u) / z / tanV, true};
+    };
+    double bestScore = -1e30;
+    glm::dvec3 bestF = glm::normalize(landerFlat + earthFlat * 0.3 + up * 0.4);
+    const double maxPitch = fovY * 0.5;
+    for (int wi = 0; wi <= 50; ++wi) {
+        const double w = wi / 50.0;
+        glm::dvec3 flat = landerFlat * (1.0 - w) + earthFlat * w;
+        if (glm::length(flat) < 1e-6) continue;
+        flat = glm::normalize(flat);
+        const glm::dvec3 r = glm::normalize(glm::cross(flat, up));
+        for (int pi = 0; pi <= 80; ++pi) {
+            const double pitch = maxPitch * pi / 80.0;
+            const glm::dvec3 f = flat * std::cos(pitch) + up * std::sin(pitch);
+            const glm::dvec3 u = glm::cross(r, f);
+            const Ndc e = project(toEarth, f, r, u), lb = project(base, f, r, u), lt = project(top, f, r, u);
+            if (!e.ok || !lb.ok || !lt.ok) continue;
+            // Soft limits: the best framing wins even when a site cannot satisfy all of them.
+            auto over = [](double v) { return v > 0.0 ? v : 0.0; };
+            double pen = over(std::abs(e.x) - 0.86) + over(e.y - 0.92) + over(-0.1 - e.y); // Earth whole, up in the sky
+            if (std::abs(e.x) < 0.24) pen += over(e.y - 0.84);                                // not under the tour strip
+            pen += over(std::abs(lb.x) - 0.85) + over(std::abs(lt.x) - 0.85) + over(-0.93 - lb.y) + over(lt.y - 0.72);
+            if (std::abs(lb.x) < 0.22) pen += over(-0.7 - lb.y);                              // not on the caption
+            if (lb.x > 0.5) pen += over(-0.78 - lb.y);                                        // not on the key hints
+            const double score = -std::abs(e.y - 0.7) - 0.6 * std::abs(std::abs(e.x - lb.x) - 0.55) - 0.4 * std::abs(lb.y + 0.45) - 20.0 * pen;
+            if (score > bestScore) {
+                bestScore = score;
+                bestF = f;
+            }
+        }
+    }
+    return cameraPos + bestF * dist;
 }
 
 double CraftCatalog::viewDistanceSizes(int index) const {

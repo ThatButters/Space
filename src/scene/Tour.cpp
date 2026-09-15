@@ -52,6 +52,8 @@ void Tour::startWithIntro(const SolarSystem& solar, int earth) {
     m_active = true;
     m_next = 0;
     m_phase = Phase::Intro;
+    m_introBody = earth;
+    m_introFromCut = false;
     m_target = earth;
     m_targetCraft = -1;
     m_mode = 0;
@@ -60,6 +62,7 @@ void Tour::startWithIntro(const SolarSystem& solar, int earth) {
 
 float Tour::fade() const {
     if (!m_active) return 0.f;
+    if (m_phase == Phase::Intro) return m_introFromCut ? 1.f - (float)std::clamp(m_t / fadeInSeconds, 0.0, 1.0) : 0.f;
     if (m_phase == Phase::FadeOut) return (float)std::clamp(m_t / fadeOutSeconds, 0.0, 1.0);
     if (m_phase == Phase::Approach) return 1.f - (float)std::clamp(m_t / fadeInSeconds, 0.0, 1.0);
     return 0.f;
@@ -123,7 +126,13 @@ void Tour::skip(int delta) {
     const size_t n = m_stops.size();
     // m_next already points one past the current stop; step relative to that.
     if (m_phase == Phase::Intro) m_next = delta > 0 ? 0 : n - 1;
-    else m_next = (m_next + n + (size_t)((delta > 0 ? 0 : -2) + n)) % n;
+    else {
+        // Back, early in a visit: the previous stop. Back, once a visit is under way: this stop from its start.
+        const int back = m_phase == Phase::Visit && m_t > 4.0 ? -1 : -2;
+        m_next = (m_next + n + (size_t)((delta > 0 ? 0 : back) + (int)n)) % n;
+    }
+    m_skipped = true;
+    m_hold = false;
     if (m_phase == Phase::FadeOut) { // already dark: just re-pick
         m_stopChosen = false;
         m_clockJump = false;
@@ -139,6 +148,20 @@ void Tour::beginCut() {
 }
 
 void Tour::beginApproach(const SolarSystem& solar) {
+    if (!m_skipped && m_next > 0 && m_next % m_stops.size() == 0 && m_introBody >= 0) {
+        // Ran off the end of the tour: back to the opening over Florida, from black.
+        LOG_INFO("Tour: back to the opening");
+        m_next = 0;
+        m_phase = Phase::Intro;
+        m_target = m_introBody;
+        m_targetCraft = -1;
+        m_mode = 0;
+        m_t = 0.0;
+        m_introRestart = true;
+        m_introFromCut = true;
+        return;
+    }
+    m_skipped = false;
     const Stop stop = m_stops[m_next % m_stops.size()];
     m_next++;
     m_targetCraft = stop.craft;
@@ -200,7 +223,7 @@ void Tour::layOutApproach(const SolarSystem& solar) {
     m_legOrient = orient;
     m_legUp = up;
     m_phase = Phase::Approach;
-    m_fovWanted = m_targetCraft >= 0 && m_crafts && m_crafts->earthInSky(solar, m_targetCraft) ? glm::radians(85.f) : 0.f;
+    m_fovWanted = m_targetCraft >= 0 && m_crafts && m_crafts->earthInSky(solar, m_targetCraft) ? glm::radians(90.f) : 0.f;
     m_t = 0.0;
     LOG_INFO("Tour: cut to {}", m_targetCraft >= 0 && m_crafts ? m_crafts->crafts()[m_targetCraft].name
                                                                  : solar.body(m_target).name + (m_mode == 1 ? "'s rings" : ""));
@@ -261,7 +284,7 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
     }
 
     // Visit: a slow drift. Orientation follows the target at a gentle rate, roll locked to the leg's up.
-    m_t += dt;
+    if (!m_hold) m_t += dt;
     double visitSeconds = orbitSeconds;
     if (m_targetCraft >= 0 && m_crafts) {
         const Craft& craft = m_crafts->crafts()[m_targetCraft];
@@ -289,12 +312,7 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
         glm::dvec3 aim = targetPos;
         if (m_targetCraft >= 0 && m_crafts)
             aim = m_crafts->viewAim(solar, m_targetCraft, camera.position, camera.fovY);
-        if (m_targetCraft >= 0 && m_crafts && m_crafts->earthInSky(solar, m_targetCraft)) {
-            // Frame the lander left of centre so the caption does not sit on it.
-            const glm::dvec3 fwd = glm::normalize(aim - camera.position);
-            const glm::dvec3 right = glm::normalize(glm::cross(fwd, m_legUp));
-            aim += right * (glm::length(aim - camera.position) * 0.22);
-        }
+
         want = glm::quatLookAt(glm::normalize(glm::vec3(aim - camera.position)), glm::vec3(m_legUp));
     }
     // At most a few degrees per second of turning.
@@ -302,6 +320,30 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
     const float ang = glm::angle(glm::inverse(camera.orientation) * want);
     camera.orientation = ang > 1e-4f ? glm::slerp(camera.orientation, want, std::min(1.f, maxStep / ang)) : want;
     if (m_t >= visitSeconds) beginCut();
+}
+
+int Tour::currentStop() const {
+    if (!m_active || m_stops.empty() || m_phase == Phase::Intro) return -1;
+    return (int)((m_next + m_stops.size() - 1) % m_stops.size());
+}
+
+void Tour::jumpTo(size_t index) {
+    if (!m_active || m_stops.empty()) return;
+    m_next = index % m_stops.size();
+    m_skipped = true;
+    m_hold = false;
+    if (m_phase == Phase::FadeOut) {
+        m_stopChosen = false;
+        m_clockJump = false;
+        return;
+    }
+    beginCut();
+}
+
+bool Tour::takeIntroRestart() {
+    if (!m_introRestart) return false;
+    m_introRestart = false;
+    return true;
 }
 
 std::string Tour::status() const {

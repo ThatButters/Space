@@ -78,6 +78,12 @@ private:
     float m_savedTimeScale = -1.f; // restored after a spacecraft tour stop
     Tour m_tour;
     float m_tourSpeed = 1.f;
+    float m_lastMouseX = -1.f, m_lastMouseY = -1.f;
+    double m_mouseIdle = 0.0;  // seconds since the mouse last moved (hover labels step aside)
+    double m_scrubHeld = 0.0;  // seconds Up / Down has been held at a stop
+    double m_scrubRate = 0.0;  // simulated seconds per real second from scrubbing (0 = not scrubbing)
+    std::string m_liveCloudDate; // the day today's cloud imagery was taken
+    void setIntroClock();       // dawn at the Cape, today
     // Near a world or beside a spacecraft the clock is held close to real time, so taking the controls
     // never leaves you riding a station that laps Earth every three seconds.
     bool m_calmClock = true;

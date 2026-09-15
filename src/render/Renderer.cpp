@@ -508,7 +508,7 @@ void Renderer::updateAutoExposure(const Frame& frame, const RenderSettings& sett
         m_exposureTarget = target;
         static int logCounter = 0;
         if (++logCounter % 120 == 0)
-            LOG_DEBUG("exposure meter: lit {:.2f} p85 {:.3f} target {:.2f} current {:.2f}", litFraction, p85Lum, target,
+            LOG_TRACE("exposure meter: lit {:.2f} p85 {:.3f} target {:.2f} current {:.2f}", litFraction, p85Lum, target,
                      m_autoExposure);
     }
     if (!settings.autoExposure) {

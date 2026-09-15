@@ -120,20 +120,14 @@ App::App(int argc, char** argv) {
         for (auto& s : stops)
             if (s.body >= 0 || s.craft >= 0) valid.push_back(s);
         m_tour.setStops(valid);
+        m_tour.setIntroBody(m_solar.find("Earth"));
     }
     loadTle();
     loadLiveClouds();
     startLiveFetch();
     if (m_tourStart >= 0) m_tour.start(m_solar, m_camera, (size_t)m_tourStart);
     else if (m_startTour) {
-        // The opening is dawn over Cape Canaveral, today: Sun ~5 deg below the Cape's horizon at the start,
-        // rising as we drift east. Sub-solar longitude then is about -80.6 + 95 deg east, i.e. 10:58 UTC.
-        const double today = std::floor(m_epochJd - 0.5) + 0.5; // 00:00 UTC
-        double jd = today + 10.97 / 24.0;
-        if (jd < m_epochJd - 0.6) jd += 1.0;
-        m_simDays = jd - m_epochJd;
-        m_solar.update(jd);
-        m_crafts.update(m_solar, jd);
+        setIntroClock();
         m_tour.startWithIntro(m_solar, m_solar.find("Earth"));
     }
     LOG_INFO("Ready. Hold right mouse to look, WASD/RF to fly, scroll to change speed, 0-9 visit bodies, F1 UI.");
@@ -542,9 +536,20 @@ void App::drawLabels() {
     }
 }
 
-std::string App::simDateString() const {
+void App::setIntroClock() {
+    // The opening is dawn over Cape Canaveral, today: Sun ~5 deg below the Cape's horizon at the start,
+    // rising as we drift east. Sub-solar longitude then is about -80.6 + 95 deg east, i.e. 10:58 UTC.
+    const double today = std::floor(m_epochJd - 0.5) + 0.5; // 00:00 UTC
+    double jd = today + 10.97 / 24.0;
+    if (jd < m_epochJd - 0.6) jd += 1.0;
+    m_simDays = jd - m_epochJd;
+    m_solar.update(jd);
+    m_crafts.update(m_solar, jd);
+}
+
+static std::string formatJulianDate(double julian, bool withTime) {
     // Julian date -> calendar (Meeus), UTC.
-    double jd = m_epochJd + m_simDays + 0.5;
+    double jd = julian + 0.5;
     const long Z = (long)std::floor(jd);
     const double F = jd - Z;
     long A = Z;
@@ -562,9 +567,12 @@ std::string App::simDateString() const {
     const int h = (int)hours, m = (int)((hours - h) * 60.0);
     static const char* names[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     char buf[64];
-    std::snprintf(buf, sizeof buf, "%d %s %ld  %02d:%02d UTC", d, names[std::clamp(month - 1, 0, 11)], year, h, m);
+    if (withTime) std::snprintf(buf, sizeof buf, "%d %s %ld  %02d:%02d UTC", d, names[std::clamp(month - 1, 0, 11)], year, h, m);
+    else std::snprintf(buf, sizeof buf, "%d %s %ld", d, names[std::clamp(month - 1, 0, 11)], year);
     return buf;
 }
+
+std::string App::simDateString() const { return formatJulianDate(m_epochJd + m_simDays, true); }
 
 void App::drawOverlay(double dt) {
     int w = 0, h = 0;
@@ -598,12 +606,107 @@ void App::drawOverlay(double dt) {
         std::snprintf(line, sizeof line, "%s   %s", m_solar.body(nearest).name.c_str(), formatDistance(std::max(best, 0.0)).c_str());
         text(font, bigPx, ImVec2(pad, pad), IM_COL32(240, 240, 250, 220), line);
         text(font, smallPx, ImVec2(pad, pad + bigPx + 4.f * scale), IM_COL32(200, 205, 220, 160), simDateString().c_str());
+        const char* state = m_scrubRate > 3000.0 ? ">>  an hour per second"
+                            : m_scrubRate > 0.0   ? ">   a minute per second"
+                            : m_scrubRate < -3000.0 ? "<<  an hour per second, backwards"
+                            : m_scrubRate < 0.0   ? "<   a minute per second, backwards"
+                            : m_tour.held()       ? "holding here  (space to go on)"
+                                                  : nullptr;
+        if (state)
+            text(font, smallPx, ImVec2(pad, pad + bigPx + smallPx + 10.f * scale), IM_COL32(235, 215, 160, 200), state);
+    }
+
+    // Top centre: the tour as a row of stops (current one lit, gaps between planetary systems); hover for the
+    // name, click to go there. Top right, while flying to a stop: where it is in the solar system.
+    if (m_tour.active() && m_tour.stopCount() > 1) {
+        ImGuiIO& sio = ImGui::GetIO();
+        const size_t n = m_tour.stopCount();
+        const int cur = m_tour.currentStop();
+        auto systemOf = [&](const Tour::Stop& s) {
+            int b = s.craft >= 0 ? m_crafts.crafts()[s.craft].parent : s.body;
+            if (b >= 0 && m_solar.body(b).parent >= 0) b = m_solar.body(b).parent;
+            return b;
+        };
+        auto stopName = [&](const Tour::Stop& s) {
+            if (s.craft >= 0) return m_crafts.crafts()[s.craft].name;
+            return m_solar.body(s.body).name + (s.mode == 1 ? "'s rings" : "");
+        };
+        const float gap = 15.f * scale, groupGap = 13.f * scale;
+        float total = 0.f;
+        for (size_t i = 1; i < n; ++i)
+            total += gap + (systemOf(m_tour.stopAt(i)) != systemOf(m_tour.stopAt(i - 1)) ? groupGap : 0.f);
+        const float y = pad + 12.f * scale;
+        float x = (w - total) * 0.5f;
+        const bool nearStrip = sio.MousePos.y >= 0.f && sio.MousePos.y < y + 30.f * scale && !m_window->cursorCaptured();
+        const float stripA = nearStrip ? 1.f : 0.5f;
+        int hoverStop = -1;
+        std::vector<float> xs(n);
+        for (size_t i = 0; i < n; ++i) {
+            if (i > 0) x += gap + (systemOf(m_tour.stopAt(i)) != systemOf(m_tour.stopAt(i - 1)) ? groupGap : 0.f);
+            xs[i] = x;
+            if (nearStrip && std::abs(sio.MousePos.x - x) < gap * 0.5f) hoverStop = (int)i;
+        }
+        for (size_t i = 0; i < n; ++i) {
+            const bool isCur = (int)i == cur, isHover = (int)i == hoverStop;
+            const float r = (isCur ? 4.5f : isHover ? 4.f : 2.6f) * scale;
+            const int alpha = (int)(stripA * (isCur || isHover ? 235 : (cur >= 0 && (int)i < cur) ? 120 : 80));
+            dl->AddCircleFilled(ImVec2(xs[i], y), r + 1.f, IM_COL32(0, 0, 0, alpha / 2), 16);
+            dl->AddCircleFilled(ImVec2(xs[i], y), r, isCur ? IM_COL32(255, 236, 190, alpha) : IM_COL32(225, 230, 245, alpha), 16);
+        }
+        if (hoverStop >= 0) {
+            const std::string name = stopName(m_tour.stopAt((size_t)hoverStop));
+            const float nw = width(font, smallPx, name.c_str());
+            text(font, smallPx, ImVec2(xs[hoverStop] - nw * 0.5f, y + 12.f * scale), IM_COL32(240, 240, 250, 230), name.c_str());
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !sio.WantCaptureMouse) m_tour.jumpTo((size_t)hoverStop);
+        }
+
+        // "You are here": orbits on a square-root scale, planets where they are tonight, the stop marked.
+        const float insetA = nearStrip ? 1.f
+                             : !m_tour.visiting() ? (m_tour.introActive() ? 0.f : 1.f)
+                                                  : (float)std::clamp(1.0 - (m_tour.legSeconds() - 4.0) / 1.5, 0.0, 1.0);
+        if (insetA > 0.01f && cur >= 0) {
+            const float size = 120.f * scale, R = size * 0.5f - 6.f * scale;
+            const ImVec2 c(w - pad - size * 0.5f, pad + size * 0.5f);
+            const glm::dvec3 sun = m_solar.sunPosition();
+            const int earth = m_solar.find("Earth"), jupiter = m_solar.find("Jupiter");
+            glm::dvec3 u = glm::normalize(m_solar.body(earth).position - sun);
+            glm::dvec3 nrm = glm::normalize(glm::cross(u, m_solar.body(jupiter).position - sun));
+            glm::dvec3 v = glm::cross(nrm, u);
+            const double auPc = 1.0 / kAuPerParsec;
+            auto place = [&](const glm::dvec3& p, float& radiusOut) {
+                const glm::dvec3 rel = p - sun;
+                const double au = glm::length(rel) / auPc;
+                const float rr = std::min((float)(R * std::sqrt(au / 30.1)), R + 3.f * scale);
+                radiusOut = rr;
+                const double ang = std::atan2(glm::dot(rel, v), glm::dot(rel, u));
+                return ImVec2(c.x + rr * (float)std::cos(ang), c.y - rr * (float)std::sin(ang));
+            };
+            dl->AddCircleFilled(c, R + 5.f * scale, IM_COL32(4, 6, 12, (int)(insetA * 110)), 48);
+            dl->AddCircleFilled(c, 2.5f * scale, IM_COL32(255, 220, 140, (int)(insetA * 230)), 12);
+            for (const char* pn : {"Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"}) {
+                const int bi = m_solar.find(pn);
+                if (bi < 0) continue;
+                float rr = 0.f;
+                const ImVec2 p = place(m_solar.body(bi).position, rr);
+                dl->AddCircle(c, rr, IM_COL32(170, 180, 210, (int)(insetA * 45)), 64, 1.f);
+                dl->AddCircleFilled(p, 1.8f * scale, IM_COL32(210, 215, 235, (int)(insetA * 170)), 8);
+            }
+            const Tour::Stop& s = m_tour.stopAt((size_t)cur);
+            const glm::dvec3 target = s.craft >= 0 ? m_crafts.crafts()[s.craft].position : m_solar.body(s.body).position;
+            float rr = 0.f;
+            const ImVec2 p = place(target, rr);
+            dl->AddCircle(p, 5.5f * scale, IM_COL32(255, 236, 190, (int)(insetA * 235)), 16, 1.5f * scale);
+            dl->AddCircleFilled(p, 2.2f * scale, IM_COL32(255, 236, 190, (int)(insetA * 235)), 8);
+        }
     }
 
     // Bottom right: the few controls that matter.
     {
-        const char* hint = m_tour.active() ? "left / right  previous / next stop     T  leave the tour     right mouse  look around     F1  settings"
-                                           : "T  tour     right mouse  look     W A S D  fly     scroll  speed     F1  settings";
+        const char* hint = m_tour.introActive()
+                               ? "space  begin     right  first stop     T  leave the tour     F1  settings"
+                           : m_tour.active()
+                               ? "left / right  stops     space  hold     up / down  time     right mouse  look     T  leave     F1  settings"
+                               : "T  tour     right mouse  look     W A S D  fly     scroll  speed     F1  settings";
         const float tw = width(font, smallPx, hint);
         text(font, smallPx, ImVec2(w - pad - tw, h - pad - smallPx), IM_COL32(200, 205, 220, 120), hint);
     }
@@ -634,11 +737,17 @@ void App::drawOverlay(double dt) {
         const int tb = m_tour.targetBody(), tc = m_tour.targetCraft();
         if (tb != m_captionBody || tc != m_captionCraft) { m_captionBody = tb; m_captionCraft = tc; m_captionAge = 0.0; }
         m_captionAge += dt;
-        std::string name, blurb;
+        std::string name, blurb, when, credit;
         if (tc >= 0) {
-            name = m_crafts.crafts()[tc].name;
-            blurb = m_crafts.crafts()[tc].blurb;
-            if (!m_crafts.crafts()[tc].when.empty()) blurb += "    -    " + m_crafts.crafts()[tc].when;
+            const Craft& cc = m_crafts.crafts()[tc];
+            name = cc.name;
+            blurb = cc.blurb;
+            when = cc.when;
+            // Say where the live data came from, where it is live.
+            const bool aroundEarth = cc.parent >= 0 && m_solar.body(cc.parent).name == "Earth";
+            if (cc.tle) credit = "orbit: CelesTrak elements of " + formatJulianDate(cc.tleEpochJd, true);
+            if (aroundEarth && when.empty() && !m_liveCloudDate.empty())
+                credit += (credit.empty() ? "" : "     /     ") + std::string("clouds: NASA GIBS imagery of ") + m_liveCloudDate;
         } else if (tb >= 0 && m_tour.targetMode() == 1) {
             name = m_solar.body(tb).name + "'s rings";
             blurb = "ice from dust grains to houses, in a sheet ten metres thick";
@@ -657,24 +766,38 @@ void App::drawOverlay(double dt) {
                 {"Rhea", "Saturn's second-largest moon"}, {"Phobos", "a captured asteroid, spiralling in"}, {"Deimos", "twelve kilometres of rock"}};
             auto it = blurbs.find(name);
             if (it != blurbs.end()) blurb = it->second;
+            if (name == "Earth" && !m_liveCloudDate.empty()) credit = "clouds: NASA GIBS imagery of " + m_liveCloudDate;
         }
         if (!name.empty()) {
             const bool flight = !m_tour.visiting();
-            const float a = (float)std::clamp(m_captionAge / 1.2, 0.0, 1.0) * (flight ? 0.55f : 1.f);
-            const std::string head = flight ? "next:  " + name : name;
-            const float hw = width(font, bodyPx, head.c_str());
-            const float y = h - pad - smallPx - 14.f * scale - bodyPx - (flight ? 0.f : smallPx + 4.f * scale);
-            text(font, bodyPx, ImVec2((w - hw) * 0.5f, y), IM_COL32(255, 255, 255, (int)(a * 230)), head.c_str());
-            if (!flight && !blurb.empty()) {
-                const float bw = width(font, smallPx, blurb.c_str());
-                text(font, smallPx, ImVec2((w - bw) * 0.5f, y + bodyPx + 4.f * scale), IM_COL32(215, 220, 235, (int)(a * 190)), blurb.c_str());
+            // Nothing over the black: the caption arrives once the picture has faded in.
+            const float a = (float)std::clamp((m_captionAge - 1.1) / 1.2, 0.0, 1.0) * (flight ? 0.55f : 1.f);
+            struct Line { std::string s; float px; ImU32 col; };
+            std::vector<Line> lines;
+            lines.push_back({flight ? "next:  " + name : name, bodyPx, IM_COL32(255, 255, 255, (int)(a * 230))});
+            if (!flight && !blurb.empty()) lines.push_back({blurb, smallPx, IM_COL32(215, 220, 235, (int)(a * 190))});
+            if (!flight && !when.empty()) lines.push_back({when, smallPx, IM_COL32(235, 215, 160, (int)(a * 200))});
+            if (!flight && !credit.empty()) lines.push_back({credit, smallPx * 0.85f, IM_COL32(180, 190, 210, (int)(a * 120))});
+            float y = h - pad - smallPx - 14.f * scale;
+            for (auto it = lines.rbegin(); it != lines.rend(); ++it) y -= it->px + 4.f * scale;
+            for (const Line& l : lines) {
+                const float lw = width(font, l.px, l.s.c_str());
+                text(font, l.px, ImVec2((w - lw) * 0.5f, y), l.col, l.s.c_str());
+                y += l.px + 4.f * scale;
             }
         }
     }
 
     // Hover: the planet, moon or spacecraft under the cursor.
     ImGuiIO& io = ImGui::GetIO();
-    if (!io.WantCaptureMouse && !m_window->cursorCaptured() && io.MousePos.x >= 0.f) {
+    if (io.MousePos.x != m_lastMouseX || io.MousePos.y != m_lastMouseY) {
+        m_lastMouseX = io.MousePos.x;
+        m_lastMouseY = io.MousePos.y;
+        m_mouseIdle = 0.0;
+    } else {
+        m_mouseIdle += dt;
+    }
+    if (!io.WantCaptureMouse && !m_window->cursorCaptured() && io.MousePos.x >= 0.f && m_mouseIdle < 2.5) {
         const glm::mat4 vp = render::makeViewProj(m_renderCamera, (float)w / (float)h);
         const glm::vec2 mouse(io.MousePos.x, io.MousePos.y);
         float bestPx = 26.f * scale;
@@ -688,12 +811,17 @@ void App::drawOverlay(double dt) {
             const float d = std::max(glm::length(mouse - sp) - onScreenR, 0.f);
             if (d < bestPx) { bestPx = d; label = n; sub = detail; }
         };
+        const int captionBody = m_tour.visiting() && m_tour.targetCraft() < 0 ? m_tour.targetBody() : -1;
+        const int captionCraft = m_tour.visiting() ? m_tour.targetCraft() : -1;
         for (size_t i = 0; i < m_solar.bodies().size(); ++i) {
             const Body& b = m_solar.body((int)i);
             const double dist = glm::length(b.position - m_camera.position) - b.radiusKm / kKmPerParsec;
+            if ((int)i == captionBody) continue;
             consider(b.position, b.radiusKm / kKmPerParsec, b.name, formatDistance(std::max(dist, 0.0)) + " away");
         }
-        for (const Craft& c : m_crafts.crafts()) {
+        for (size_t ci = 0; ci < m_crafts.crafts().size(); ++ci) {
+            const Craft& c = m_crafts.crafts()[ci];
+            if ((int)ci == captionCraft) continue;
             if (c.modelIndex < 0 || !c.listed) continue;
             const double dist = glm::length(c.position - m_camera.position);
             consider(c.position, c.sizeMeters / (kKmPerParsec * 1000.0), c.name, c.blurb + "   " + formatDistance(dist) + " away");
@@ -742,6 +870,7 @@ bool App::loadLiveClouds() {
     else m_renderer.replaceTexture(earth.texCloudsLiveIndex, std::move(tex));
     std::string date;
     std::ifstream(dir / "clouds_today.txt") >> date;
+    m_liveCloudDate = date;
     LOG_INFO("Live clouds: NASA GIBS imagery for {}", date);
     return true;
 }
@@ -842,6 +971,10 @@ int App::run() {
         if (m_tour.active() && !ImGui::GetIO().WantTextInput) {
             if (m_input.keyPressed(GLFW_KEY_RIGHT)) m_tour.skip(1);
             if (m_input.keyPressed(GLFW_KEY_LEFT)) m_tour.skip(-1);
+            if (m_input.keyPressed(GLFW_KEY_SPACE) || m_input.keyPressed(GLFW_KEY_ENTER)) {
+                if (m_tour.introActive()) m_tour.skip(1); // begin now
+                else m_tour.setHold(!m_tour.held());
+            }
         }
 
         const glm::dvec3 posBefore = m_camera.position;
@@ -904,6 +1037,7 @@ void App::updateScene(double dt) {
     if (m_tour.active() && m_tour.takeClockJump(tourJd)) {
         m_simDays = tourJd - m_epochJd; // a landing site lit by morning sun: jumped while the picture is black
     }
+    if (m_tour.active() && m_tour.takeIntroRestart()) setIntroClock();
     {
         double scale = m_timeScale;
         if (m_calmClock && m_useGaia) {
@@ -937,6 +1071,23 @@ void App::updateScene(double dt) {
             }
         }
         m_simDays += dt * scale;
+    }
+    // Up / Down at a tour stop runs the clock forward or back: a minute per second, an hour per second once
+    // held a moment. The camera stays where it is (only the worlds move), so it is comfortable in VR too.
+    m_scrubRate = 0.0;
+    if (m_tour.visiting() && !ImGui::GetIO().WantTextInput) {
+        const int dir = (m_input.keyDown(GLFW_KEY_UP) ? 1 : 0) - (m_input.keyDown(GLFW_KEY_DOWN) ? 1 : 0);
+        if (dir != 0) {
+            m_scrubHeld += dt;
+            // Beside an orbiter the view rides its orbit, so fast time would swing the world around the
+            // viewer: a minute per second there, an hour per second everywhere else.
+            const int tc = m_tour.targetCraft();
+            const bool orbiter = tc >= 0 && m_crafts.crafts()[tc].placement == CraftPlacement::Orbit;
+            m_scrubRate = dir * (m_scrubHeld > 1.5 && !orbiter ? 3600.0 : 60.0);
+            m_simDays += m_scrubRate / 86400.0 * dt;
+        } else {
+            m_scrubHeld = 0.0;
+        }
     }
     m_solar.update(m_epochJd + m_simDays);
     if (m_useGaia) m_crafts.update(m_solar, m_epochJd + m_simDays);
@@ -1309,6 +1460,44 @@ void App::drawUi(double dt) {
 
     ImGui::TextDisabled("%s", m_ctx.gpuName().c_str());
     ImGui::Text("%.0f fps   cpu %.2f ms   gpu %.2f ms", m_smoothedFps, dt * 1000.0, m_renderer.lastGpuFrameMs());
+    if (!ImGui::BeginTabBar("panels")) {
+        ImGui::End();
+        return;
+    }
+    if (ImGui::BeginTabItem("Look")) {
+        // The handful of things someone watching would want to change.
+        if (m_useGaia) {
+            bool tour = m_tour.active();
+            if (ImGui::Checkbox("tour", &tour)) {
+                if (tour) m_tour.start(m_solar, m_camera);
+                else m_tour.stop("checkbox");
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", m_tour.status().c_str());
+            ImGui::SliderFloat("tour pace", &m_tourSpeed, 0.25f, 4.f, "%.2fx");
+        }
+        ImGui::Checkbox("auto exposure", &m_settings.autoExposure);
+        if (m_settings.autoExposure) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("x%.2f", m_renderer.autoExposureValue());
+        }
+        ImGui::SliderFloat(m_settings.autoExposure ? "brightness" : "exposure", &m_settings.exposure, 0.25f, 4.f, "%.2f",
+                           ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("bloom", &m_settings.bloomStrength, 0.f, 2.f);
+        ImGui::SliderFloat("sun glare", &m_settings.sunGlare, 0.f, 3.f);
+        ImGui::SliderFloat("motion blur", &m_settings.motionBlur, 0.f, 1.5f);
+        if (m_renderer.dlssAvailable()) {
+            ImGui::Checkbox("DLSS", &m_settings.dlss);
+            const char* dlssNames[] = {"performance", "balanced", "quality", "ultra quality", "DLAA (native)"};
+            ImGui::Combo("DLSS quality", &m_settings.dlssQuality, dlssNames, 5);
+        }
+        if (m_renderer.hdrAvailable()) ImGui::Checkbox("HDR output", &m_settings.hdrOutput);
+        ImGui::Checkbox("vsync", &m_settings.vsync);
+        if (m_audio.running()) ImGui::SliderFloat("music reactivity", &m_audioReact, 0.f, 2.5f, "%.2f");
+        ImGui::SliderFloat("mouse sensitivity", &m_mouseSensitivity, 0.0005f, 0.006f, "%.4f");
+        ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Debug")) {
     ImGui::Separator();
 
     if (m_useGaia) {
@@ -1449,6 +1638,9 @@ void App::drawUi(double dt) {
         ImGui::TextDisabled("(display is SDR)");
     }
     ImGui::Separator();
+        ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
 
     ImGui::TextDisabled("RMB look  WASD fly  R/F up/down  Q/E roll");
     ImGui::TextDisabled("scroll speed  shift boost  T tour  F1 hide  esc quit");

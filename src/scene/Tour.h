@@ -23,6 +23,8 @@ public:
     };
     void setStops(std::vector<Stop> stops) { m_stops = std::move(stops); }
     void setCrafts(CraftCatalog* crafts) { m_crafts = crafts; }
+    // The body the opening flies over; the tour returns to the opening after its last stop.
+    void setIntroBody(int body) { m_introBody = body; }
     bool atCraft() const { return m_active && m_targetCraft >= 0; }
     bool inFlight() const { return m_active && (m_phase == Phase::Approach || m_phase == Phase::FadeOut); }
     bool visiting() const { return m_active && m_phase == Phase::Visit; }
@@ -42,6 +44,18 @@ public:
     // Cut to the next (+1) or previous (-1) stop right now.
     void skip(int delta);
     bool active() const { return m_active; }
+
+    size_t stopCount() const { return m_stops.size(); }
+    const Stop& stopAt(size_t i) const { return m_stops[i]; }
+    // The stop being shown or flown to (-1 during the opening).
+    int currentStop() const;
+    // Cut to a stop by index (the tour strip).
+    void jumpTo(size_t index);
+    // Space: stay at this stop until released (the camera holds still, the clock keeps going).
+    void setHold(bool hold) { m_hold = hold; }
+    bool held() const { return m_hold && m_active && m_phase == Phase::Visit; }
+    // True once after the last stop has cut back to the opening: the app resets the clock to dawn.
+    bool takeIntroRestart();
 
     // Advances the tour and writes the camera. Call after the solar system has been updated this frame.
     void update(const SolarSystem& solar, Camera& camera, double dt, float speedScale);
@@ -83,6 +97,11 @@ private:
     glm::quat m_legOrient{1.f, 0.f, 0.f, 0.f};
     glm::dvec3 m_legUp{0.0, 1.0, 0.0};
     bool m_stopChosen = false; // FadeOut: the next stop is picked (and any clock jump requested)
+    bool m_hold = false;
+    bool m_skipped = false;       // the next stop was chosen by a key or a click, not by running out
+    bool m_introRestart = false;  // pending: tell the app to reset the clock for the opening
+    bool m_introFromCut = false;  // the opening is being entered from a cut (fade in from black)
+    int m_introBody = -1;
     float m_defaultFov = 0.f, m_fovWanted = 0.f;  // the camera's own lens; lunar landing sites get a wider one (Earth in the sky)
     bool m_clockJump = false;
     double m_clockJumpJd = 0.0;
