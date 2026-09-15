@@ -1,0 +1,25 @@
+#version 460
+// Auto-exposure metering: the resolved HDR frame sampled on a coarse grid (each cell box-filtered from
+// four taps, so single stars and glints do not flicker the result). Writes log2 luminance per cell to a
+// host-visible buffer the CPU turns into a weighted histogram a couple of frames later.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uHdr;
+layout(std430, set = 0, binding = 1) writeonly buffer Cells { float logLum[]; };
+
+const uint GRID_W = 64u, GRID_H = 40u;
+
+void main() {
+    uvec2 id = gl_GlobalInvocationID.xy;
+    if (id.x >= GRID_W || id.y >= GRID_H) return;
+    vec2 cell = 1.0 / vec2(GRID_W, GRID_H);
+    vec2 base = vec2(id) * cell;
+    float lum = 0.0;
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 2; ++i) {
+            vec3 c = textureLod(uHdr, base + (vec2(i, j) + 0.5) * 0.5 * cell, 0.0).rgb;
+            lum += dot(c, vec3(0.2126, 0.7152, 0.0722));
+        }
+    logLum[id.y * GRID_W + id.x] = log2(max(lum * 0.25, 1e-6));
+}

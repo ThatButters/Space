@@ -65,6 +65,7 @@ App::App(int argc, char** argv) {
         else if (a == "--time-scale" && i + 1 < argc) m_timeScale = (float)std::atof(argv[++i]);
         else if (a == "--sdr") m_settings.hdrOutput = false;
         else if (a == "--no-dlss") m_settings.dlss = false;
+        else if (a == "--no-auto-exposure") m_settings.autoExposure = false;
         else if (a == "--dlss-jitter" && i + 2 < argc) {
             m_settings.dlssJitterSign.x = (float)std::atof(argv[++i]);
             m_settings.dlssJitterSign.y = (float)std::atof(argv[++i]);
@@ -1381,7 +1382,13 @@ void App::drawUi(double dt) {
     ImGui::Checkbox("temporal anti-aliasing", &m_settings.taa);
     ImGui::SliderFloat("sun glare", &m_settings.sunGlare, 0.f, 3.f);
     ImGui::SliderFloat("motion blur", &m_settings.motionBlur, 0.f, 1.5f);
-    ImGui::SliderFloat("exposure", &m_settings.exposure, 0.05f, 8.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ImGui::Checkbox("auto exposure", &m_settings.autoExposure);
+    if (m_settings.autoExposure) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("x%.2f", m_renderer.autoExposureValue());
+    }
+    ImGui::SliderFloat(m_settings.autoExposure ? "exposure offset" : "exposure", &m_settings.exposure, 0.05f, 8.f, "%.2f",
+                       ImGuiSliderFlags_Logarithmic);
     ImGui::SliderFloat("bloom", &m_settings.bloomStrength, 0.f, 2.f);
     ImGui::SliderFloat("bloom knee", &m_settings.bloomKnee, 0.f, 4.f);
     ImGui::SliderFloat("bloom radius", &m_settings.bloomRadius, 0.5f, 2.5f);

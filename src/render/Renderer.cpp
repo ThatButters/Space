@@ -327,6 +327,11 @@ void Renderer::init(gfx::Context& ctx, Window& window) {
         f.frameMapped = info.pMappedData;
         f.frameSet = allocSet(m_ssboBothSetLayout);
         writeSsbo(dev, f.frameSet, f.frameBuffer.buffer);
+
+        f.lumBuffer.create(ctx, kLumCells * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
+                           VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+        vmaGetAllocationInfo(ctx.allocator(), f.lumBuffer.allocation, &info);
+        f.lumMapped = info.pMappedData;
     }
 
     VkQueryPoolCreateInfo qpi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -368,6 +373,9 @@ void Renderer::shutdown() {
     if (m_postPipeline) vkDestroyPipeline(dev, m_postPipeline, nullptr);
     if (m_postLayout) vkDestroyPipelineLayout(dev, m_postLayout, nullptr);
     if (m_postSetLayout) vkDestroyDescriptorSetLayout(dev, m_postSetLayout, nullptr);
+    if (m_lumPipeline) vkDestroyPipeline(dev, m_lumPipeline, nullptr);
+    if (m_lumLayout) vkDestroyPipelineLayout(dev, m_lumLayout, nullptr);
+    if (m_lumSetLayout) vkDestroyDescriptorSetLayout(dev, m_lumSetLayout, nullptr);
     if (m_motionPipeline) vkDestroyPipeline(dev, m_motionPipeline, nullptr);
     if (m_motionLayout) vkDestroyPipelineLayout(dev, m_motionLayout, nullptr);
     if (m_motionSetLayout) vkDestroyDescriptorSetLayout(dev, m_motionSetLayout, nullptr);
@@ -412,6 +420,7 @@ void Renderer::shutdown() {
         f.bodyBuffer.destroy(*m_ctx);
         f.craftBuffer.destroy(*m_ctx);
         f.frameBuffer.destroy(*m_ctx);
+        f.lumBuffer.destroy(*m_ctx);
         vkDestroyFence(dev, f.inFlight, nullptr);
         vkDestroySemaphore(dev, f.imageAvailable, nullptr);
         vkDestroyCommandPool(dev, f.pool, nullptr);
@@ -451,6 +460,65 @@ void Renderer::createSwapchainDependent() {
     createPostResources();
     createBloomChain();
     updateTonemapDescriptor();
+}
+
+void Renderer::updateAutoExposure(const Frame& frame, const RenderSettings& settings) {
+    const float dt = std::clamp(m_frameDeltaMs, 1.f, 100.f) / 1000.f;
+    if (frame.lumWritten && frame.lumMapped) {
+        // Space photography is exposed for the lit subject, not the black around it: only cells with
+        // real light count, weighted toward the centre of the frame. With too little lit area (a star
+        // field, a thin crescent) the exposure rests at 1, where everything was calibrated.
+        const float* cells = static_cast<const float*>(frame.lumMapped);
+        constexpr int W = 64, H = 40;
+        constexpr int BINS = 64;
+        constexpr float LO = -10.f, HI = 6.f;
+        float hist[BINS] = {};
+        float litW = 0.f, totalW = 0.f;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const float u = (x + 0.5f) / W - 0.5f, v = (y + 0.5f) / H - 0.5f;
+                const float w = 1.f - 1.4f * (u * u + v * v);
+                totalW += w;
+                const float l = cells[y * W + x];
+                if (!(l > std::log2(0.01f))) continue; // dark sky (and NaN) does not meter
+                litW += w;
+                const int b = std::clamp((int)((l - LO) / (HI - LO) * BINS), 0, BINS - 1);
+                hist[b] += w;
+            }
+        float target = 1.f, p85Lum = 0.f;
+        const float litFraction = totalW > 0.f ? litW / totalW : 0.f;
+        if (litW > 0.f) {
+            // The 85th percentile of the lit area goes to ~0.5 before the tonemap: bright cloud and sunlit
+            // regolith both land just under the shoulder instead of clipping or sitting dull.
+            float acc = 0.f, p85 = LO;
+            for (int b = 0; b < BINS; ++b) {
+                acc += hist[b];
+                if (acc >= 0.85f * litW) {
+                    p85 = LO + (b + 0.5f) * (HI - LO) / BINS;
+                    p85Lum = std::pow(2.f, p85);
+                    break;
+                }
+            }
+            // Calibrated so the scenes the engine was tuned on (sunlit cloud from the ISS) meter to ~1.
+            const float key = 0.25f;
+            const float metered = std::clamp(key / std::pow(2.f, p85), 0.35f, 1.6f);
+            const float coverage = std::clamp((litFraction - 0.04f) / 0.2f, 0.f, 1.f);
+            target = std::exp(std::log(metered) * coverage);
+        }
+        m_exposureTarget = target;
+        static int logCounter = 0;
+        if (++logCounter % 120 == 0)
+            LOG_DEBUG("exposure meter: lit {:.2f} p85 {:.3f} target {:.2f} current {:.2f}", litFraction, p85Lum, target,
+                     m_autoExposure);
+    }
+    if (!settings.autoExposure) {
+        m_autoExposure = 1.f;
+        return;
+    }
+    // Adapt in log space: toward darker (a bright scene arrives) in ~0.6 s, toward brighter in ~2.5 s.
+    const float cur = std::log(m_autoExposure), tgt = std::log(m_exposureTarget);
+    const float tau = tgt < cur ? 0.6f : 2.5f;
+    m_autoExposure = std::exp(cur + (tgt - cur) * (1.f - std::exp(-dt / tau)));
 }
 
 bool Renderer::createDlssFeature(VkExtent2D out) {
@@ -628,11 +696,23 @@ void Renderer::createPostResources() {
         m_motionLayout = gfx::createPipelineLayout(*m_ctx, {m_motionSetLayout}, sizeof(PostPushConstants),
                                                    VK_SHADER_STAGE_COMPUTE_BIT);
         m_motionPipeline = gfx::createComputePipeline(*m_ctx, "motion.comp.spv", m_motionLayout);
+
+        VkDescriptorSetLayoutBinding lb[2] = {
+            {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        lci.bindingCount = 2;
+        lci.pBindings = lb;
+        VK_CHECK(vkCreateDescriptorSetLayout(dev, &lci, nullptr, &m_lumSetLayout));
+        m_lumLayout = gfx::createPipelineLayout(*m_ctx, {m_lumSetLayout}, 0, VK_SHADER_STAGE_COMPUTE_BIT);
+        m_lumPipeline = gfx::createComputePipeline(*m_ctx, "luminance.comp.spv", m_lumLayout);
     }
-    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5}};
+    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7 + kFramesInFlight},
+                                    {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5},
+                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFramesInFlight}};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    dpi.maxSets = 3;
-    dpi.poolSizeCount = 2;
+    dpi.maxSets = 3 + kFramesInFlight;
+    dpi.poolSizeCount = 3;
     dpi.pPoolSizes = sizes;
     VK_CHECK(vkCreateDescriptorPool(dev, &dpi, nullptr, &m_postPool));
     VkDescriptorSetLayout layouts[2] = {m_postSetLayout, m_postSetLayout};
@@ -660,6 +740,30 @@ void Renderer::createPostResources() {
             writes[k].pImageInfo = &infos[k];
         }
         vkUpdateDescriptorSets(dev, 5, writes, 0, nullptr);
+    }
+    for (auto& f : m_frames) {
+        VkDescriptorSetAllocateInfo la{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        la.descriptorPool = m_postPool;
+        la.descriptorSetCount = 1;
+        la.pSetLayouts = &m_lumSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(dev, &la, &f.lumSet));
+        VkDescriptorImageInfo img{m_linearSampler, m_post.view, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorBufferInfo buf{f.lumBuffer.buffer, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet w[2];
+        w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w[0].dstSet = f.lumSet;
+        w[0].dstBinding = 0;
+        w[0].descriptorCount = 1;
+        w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w[0].pImageInfo = &img;
+        w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w[1].dstSet = f.lumSet;
+        w[1].dstBinding = 1;
+        w[1].descriptorCount = 1;
+        w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        w[1].pBufferInfo = &buf;
+        vkUpdateDescriptorSets(dev, 2, w, 0, nullptr);
+        f.lumWritten = false;
     }
     m_motionSet = VK_NULL_HANDLE;
     if (m_dlssActive) {
@@ -1122,6 +1226,7 @@ void Renderer::endFrame(const Camera& camera, double timeSeconds, const RenderSe
     Frame& frame = m_frames[m_frameIndex];
 
     VK_CHECK(vkWaitForFences(dev, 1, &frame.inFlight, VK_TRUE, UINT64_MAX));
+    updateAutoExposure(frame, settings);
     if (m_diagPending) {
         m_ctx->waitIdle();
         reportDiagnostic();
@@ -1605,6 +1710,15 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
         ++m_frameSerial;
     }
 
+    // ---- Exposure metering (compute): read back when this frame slot comes round again ----------
+    {
+        Frame& lf = m_frames[m_frameIndex];
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_lumPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_lumLayout, 0, 1, &lf.lumSet, 0, nullptr);
+        vkCmdDispatch(cmd, 8, 5, 1);
+        lf.lumWritten = true;
+    }
+
     // ---- Bloom (compute) --------------------------------------------------------------------
     recordBloom(cmd, settings);
     m_diagThisFrame = m_diagRequested;
@@ -1639,7 +1753,8 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemapPipeline);
         VkDescriptorSet tmSets[] = {m_tonemapSet, frame.frameSet};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemapLayout, 0, 2, tmSets, 0, nullptr);
-        TonemapPushConstants tpc{{settings.exposure, settings.bloomStrength, m_swapchain.isHdr() ? 1.f : 0.f, 0.f},
+        const float exposure = settings.exposure * (settings.autoExposure ? m_autoExposure : 1.f);
+        TonemapPushConstants tpc{{exposure, settings.bloomStrength, m_swapchain.isHdr() ? 1.f : 0.f, 0.f},
                                  {settings.hdrPaperWhite, settings.hdrPeak, 0.f, 0.f}};
         vkCmdPushConstants(cmd, m_tonemapLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(tpc), &tpc);
         vkCmdDraw(cmd, 3, 1, 0, 0);

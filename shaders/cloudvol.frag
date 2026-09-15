@@ -172,7 +172,7 @@ void main() {
         float powder = 1.0 - 0.5 * exp(-dens * 6.0);
         float lit = night ? 0.0 : (0.5 * exp(-odSun) + 0.5 * exp(-odSun * 0.12)) * powder;
         vec3 up = normalize(p);
-        float day = clamp(dot(up, sunDir) * 2.0 + 0.3, 0.0, 1.0);
+        float day = smoothstep(-0.08, 0.25, dot(up, sunDir)); // no sky fill on the night side
         vec3 sun = vec3(1.0, 0.98, 0.95) * lit * phase * 0.4;
         vec3 sky = vec3(0.30, 0.45, 0.75) * (0.07 + 0.2 * hn) * day;   // blue fill from above
         vec3 ground = vec3(0.10, 0.11, 0.12) * (0.25 * (1.0 - hn)) * day; // a little bounce from below

@@ -14,7 +14,7 @@ judged with the right exposure and the right tour controls.
 
 | # | Work package | Effort | Proof |
 |---|---|---|---|
-| 0.1 | **Auto-exposure**: log-luminance histogram in `post.comp` (compute, 64 bins), centre-weighted, eye-adaptation curve (bright→dark 3 s, dark→bright 0.6 s), manual EV offset kept as a slider, clamps per stop so the Sun never drives the Moon black. | 1 | Sunrise over the ISS limb blooms then settles; Moon surface and Earth-from-ISS both correctly exposed in one run. |
+| ~~0.1~~ | ✅ **Auto-exposure**: log-luminance histogram in `post.comp` (compute, 64 bins), centre-weighted, eye-adaptation curve (bright→dark 3 s, dark→bright 0.6 s), manual EV offset kept as a slider, clamps per stop so the Sun never drives the Moon black. | 1 | Sunrise over the ISS limb blooms then settles; Moon surface and Earth-from-ISS both correctly exposed in one run. |
 | 0.2 | **Tour strip**: a row of dots along the bottom, current stop lit, names on hover, click to jump; a small solar-system inset ("you are here"). | 1 | Screenshot of any stop shows the strip; clicking Saturn cuts there. |
 | 0.3 | **Hold and time**: Space holds the visit (timer stops, drift continues); Up/Down scrubs the clock ×1 / ×60 / ×3600 at a stop with no camera rotation; skip-back replays the current stop first. | 0.5 | ISS stop scrubbed into night and back; Moon terminator moved across a crater while the camera stays put. |
 | 0.4 | **Captions and credits**: caption fades in after the fade-in; date left, blurb centred; hover label suppressed for the current target; a data-credit line at live stops ("clouds: NASA GIBS 14 Sep · ISS: CelesTrak 06:12 UTC"). | 0.5 | ISS frame shows the credit line and no duplicate label. |

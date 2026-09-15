@@ -53,6 +53,7 @@ struct RenderSettings {
     bool dlss = true;           // DLSS super resolution when the SDK and GPU allow it
     int dlssQuality = 2;        // Dlss::Quality
     glm::vec2 dlssJitterSign{1.f, 1.f}; // sign of the jitter offset handed to DLSS (tuning aid)
+    bool autoExposure = true;   // meter the frame and adapt (exposure then acts as an EV offset)
     float sunGlare = 1.0f;      // glare strength around the Sun (0 = off)
     float motionBlur = 0.6f;    // blur along last frame's motion (0 = off)
 };
@@ -160,6 +161,7 @@ public:
     bool hdrAvailable() const { return m_swapchain.hdrAvailable(); }
     bool hdrActive() const { return m_swapchain.isHdr(); }
     bool dlssAvailable() const { return m_dlss.available(); }
+    float autoExposureValue() const { return m_autoExposure; }
     bool dlssActive() const { return m_dlssActive; }
     VkExtent2D renderExtent() const { return m_renderExtent; }
 
@@ -191,6 +193,10 @@ private:
         gfx::Buffer frameBuffer; // per-frame FrameGpu block (music + constellation highlights)
         void* frameMapped = nullptr;
         VkDescriptorSet frameSet = VK_NULL_HANDLE;
+        gfx::Buffer lumBuffer; // auto-exposure metering cells written by luminance.comp, read back later
+        void* lumMapped = nullptr;
+        VkDescriptorSet lumSet = VK_NULL_HANDLE; // swapchain-dependent (samples m_post)
+        bool lumWritten = false;
     };
 
     void createSwapchainDependent();
@@ -256,6 +262,16 @@ private:
     float m_frameDeltaMs = 16.7f;
     double m_lastFrameTime = 0.0;
     bool createDlssFeature(VkExtent2D out);
+
+    // Auto-exposure: metered from the resolved frame, adapted over time (brighter scenes quickly, darker
+    // slowly, like an eye).
+    static constexpr uint32_t kLumCells = 64 * 40;
+    VkDescriptorSetLayout m_lumSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_lumLayout = VK_NULL_HANDLE;
+    VkPipeline m_lumPipeline = VK_NULL_HANDLE;
+    float m_autoExposure = 1.f;
+    float m_exposureTarget = 1.f;
+    void updateAutoExposure(const Frame& frame, const RenderSettings& settings);
     void destroyDlssResources();
 
     // Bloom mip chain (half res downward), all kept in GENERAL layout for compute access.
