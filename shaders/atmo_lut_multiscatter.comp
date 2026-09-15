@@ -1,0 +1,66 @@
+#version 460
+#include "common.glsl"
+#include "atmosphere.glsl"
+// Bakes one atmosphere class's multiple-scattering LUT (Hillaire 2020, section 5.5): second-order light
+// gathered isotropically over the sphere of directions at a point (including sunlight bounced off the
+// ground), then scaled by a geometric series for all the higher orders.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D uOut;
+layout(set = 0, binding = 1) uniform sampler2D uTransmittance;
+layout(push_constant) uniform PushConstants { int cls; } pc;
+
+void main() {
+    ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(id, ivec2(ATMO_MS_SIZE)))) return;
+    AtmoClass a = kAtmo[pc.cls];
+    float R = a.radiusKm, Rt = R + a.topKm;
+    vec2 x = vec2(id) / (ATMO_MS_SIZE - 1.0);
+    float muS = x.x * 2.0 - 1.0;
+    float r = R + max(x.y, 0.002) * (Rt - R);
+    vec3 pos = vec3(0.0, r, 0.0);
+    vec3 sunDir = vec3(sqrt(max(1.0 - muS * muS, 0.0)), muS, 0.0);
+
+    const int DIRS = 64, STEPS = 20;
+    const float isotropic = 1.0 / (4.0 * PI);
+    vec3 secondOrder = vec3(0.0), transfer = vec3(0.0);
+    for (int k = 0; k < DIRS; ++k) {
+        float z = 1.0 - 2.0 * (float(k) + 0.5) / float(DIRS); // Fibonacci sphere
+        float ring = sqrt(max(1.0 - z * z, 0.0));
+        float phi = 2.39996323 * float(k);
+        vec3 dir = vec3(ring * cos(phi), z, ring * sin(phi));
+        vec2 top = atmoRaySphere(pos, dir, Rt);
+        vec2 ground = atmoRaySphere(pos, dir, R);
+        bool hitsGround = ground.x > 0.0;
+        float tMax = hitsGround ? ground.x : max(top.y, 0.0);
+        float dt = tMax / float(STEPS);
+        vec3 T = vec3(1.0);
+        for (int i = 0; i < STEPS; ++i) {
+            vec3 p = pos + dir * ((float(i) + 0.5) * dt);
+            float pr = length(p);
+            vec3 sR, sM;
+            vec3 ext = atmoExtinction(a, pr - R, sR, sM);
+            vec3 stepT = exp(-ext * dt);
+            vec2 toSun = atmoRaySphere(p, sunDir, R);
+            float lit = (toSun.y > 0.0 && toSun.x > 0.0) ? 0.0 : 1.0; // shadowed only by the planet ahead
+            vec3 sunT = textureLod(uTransmittance, atmoTransmittanceUv(R, Rt, pr, dot(p / pr, sunDir)), 0.0).rgb * lit;
+            vec3 scat = sR + sM;
+            vec3 integ = (vec3(1.0) - stepT) / max(ext, vec3(1e-9));
+            secondOrder += T * scat * sunT * isotropic * integ;
+            transfer += T * scat * integ;
+            T *= stepT;
+        }
+        if (hitsGround) {
+            vec3 n = normalize(pos + dir * ground.x);
+            float muG = dot(n, sunDir);
+            vec3 sunT = textureLod(uTransmittance, atmoTransmittanceUv(R, Rt, R, muG), 0.0).rgb;
+            secondOrder += T * sunT * a.groundAlbedo * max(muG, 0.0) / PI;
+        }
+    }
+    // Averaged over the sphere with an isotropic phase function: sum * (4 pi / N) * (1 / 4 pi).
+    secondOrder /= float(DIRS);
+    transfer /= float(DIRS);
+    // The series diverges in optically thick, bright air (Mars' dust): cap the higher orders at 2x.
+    vec3 psi = secondOrder * min(vec3(1.0) / max(vec3(1.0) - transfer, vec3(1e-3)), vec3(2.0));
+    imageStore(uOut, id, vec4(psi, 1.0));
+}

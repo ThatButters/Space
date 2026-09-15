@@ -66,6 +66,7 @@ App::App(int argc, char** argv) {
         else if (a == "--sdr") m_settings.hdrOutput = false;
         else if (a == "--no-dlss") m_settings.dlss = false;
         else if (a == "--no-auto-exposure") m_settings.autoExposure = false;
+        else if (a == "--no-atmospheres") m_atmospheres = false;
         else if (a == "--dlss-jitter" && i + 2 < argc) {
             m_settings.dlssJitterSign.x = (float)std::atof(argv[++i]);
             m_settings.dlssJitterSign.y = (float)std::atof(argv[++i]);
@@ -91,6 +92,7 @@ App::App(int argc, char** argv) {
     m_ctx.deviceExtensionHook = render::Dlss::deviceExtensions;
     m_ctx.init(*m_window, validation);
     m_renderer.init(m_ctx, *m_window);
+    m_solar.setAtmosphereLuts(m_atmospheres ? m_renderer.atmosphereLutBase() : -1);
 
     m_epochJd = SolarSystem::nowJulianDate();
     m_solar.update(m_epochJd);
@@ -111,9 +113,9 @@ App::App(int argc, char** argv) {
             return Tour::Stop{c >= 0 ? m_crafts.crafts()[c].parent : -1, c};
         };
         std::vector<Tour::Stop> stops = {
-            craft("Saturn V"), craft("ISS"), body("Moon"), craft("Apollo 11 (Tranquility Base)"), craft("Apollo 15"), craft("Apollo 17"), craft("LRO"),
+            craft("Saturn V"), craft("ISS"), body("Moon"), craft("Apollo 11 (Tranquility Base)"), craft("LRO"),
             body("Mars"), craft("Perseverance"), craft("MRO"), body("Jupiter"), craft("Juno"), body("Io"),
-            body("Saturn"), Tour::Stop{m_solar.find("Saturn"), -1, 1}, body("Titan"), craft("Huygens"), body("Uranus"), body("Neptune"),
+            body("Saturn"), Tour::Stop{m_solar.find("Saturn"), -1, 1}, body("Titan"),body("Uranus"), body("Neptune"),
             craft("Voyager 1"), body("Sun"), craft("Parker Solar Probe"), body("Mercury"), body("Venus"),
             craft("JWST"), craft("Hubble"), craft("Apollo-Soyuz"), body("Earth")};
         std::vector<Tour::Stop> valid;

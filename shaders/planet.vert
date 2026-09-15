@@ -12,6 +12,8 @@ struct Body {
     vec4 reliefParams;  // height min km, height range km, normal strength, detail kind
     ivec4 patchTex;     // local terrain patch: albedo, normal, height (-1 = none)
     vec4 patchParams;   // height min m, height range m, metres per texel, 1 when active
+    ivec4 atmoTex;      // transmittance LUT, multiple-scattering LUT, atmosphere class (-1 = none)
+    vec4 atmoParams;    // x top of the atmosphere / radius
 };
 layout(std430, set = 0, binding = 0) readonly buffer Bodies { Body bodies[]; };
 
@@ -45,17 +47,19 @@ void main() {
     }
 
     float shell = pc.params.z;
-    if (shell > 0.0) {
-        // Atmosphere pass: only bodies with an atmosphere, drawn on a slightly larger sphere.
-        if (b.params.z <= 0.0 || type == 0 || type == 5) {
+    if (shell != 0.0) {
+        // Shell passes: < 0 each body's own atmosphere top (bodies without one collapse), > 0 a fixed shell
+        // such as the cloud layer (bodies without an atmosphere collapse).
+        bool atmoPass = shell < 0.0;
+        if ((atmoPass ? b.atmoTex.z < 0 : b.params.z <= 0.0) || type == 0 || type == 5) {
             gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
             vWorldPos = vec3(0.0); vLocal = vec3(0.0); vNormal = vec3(0.0, 1.0, 0.0); vBody = 0; vRadial = 0.0; vBoost = 1.0;
             return;
         }
-        local *= shell;
+        local *= atmoPass ? b.atmoParams.x * 1.0015 : shell;
     }
     float boost = 1.0;
-    if (shell <= 0.0 && type != 5) {
+    if (shell == 0.0 && type != 5) {
         // Surface pass: a proxy just outside the true sphere (the 48x96 facets sit at most 0.11% inside
         // a sphere through their corners); the fragment shader ray-traces the exact surface.
         local *= 1.0015;

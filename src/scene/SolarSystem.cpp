@@ -150,6 +150,21 @@ SolarSystem::SolarSystem() {
     int neptune = planet("Neptune", BodyType::IceGiant, 24622, 7, 16.11, 28.32, {0.20f, 0.35f, 0.90f}, 17.f, 0.4f);
     moon("Triton", neptune, 1353.4, 354759, -5.877, 3.3, {0.78f, 0.74f, 0.70f}, 18.f);
 
+    // Physically based atmospheres (shaders/atmosphere.glsl): class and the height of each one's top.
+    auto atmo = [&](const char* name, int cls, double topKm) {
+        Body& b = m_bodies[find(name)];
+        b.atmoClass = cls;
+        b.atmoTopKm = topKm;
+    };
+    atmo("Earth", 0, 320.0);
+    atmo("Mars", 1, 60.0);
+    atmo("Venus", 2, 90.0);
+    atmo("Titan", 3, 400.0);
+    atmo("Jupiter", 4, 350.0);
+    atmo("Saturn", 5, 500.0);
+    atmo("Uranus", 6, 400.0);
+    atmo("Neptune", 7, 400.0);
+
     // Surface maps (assets/textures, see scripts/fetch_textures.py). Moons without maps stay procedural.
     auto tex = [&](const char* name, const char* day, const char* night = "", const char* clouds = "") {
         Body& b = m_bodies[find(name)];
@@ -371,6 +386,10 @@ uint32_t SolarSystem::buildGpuList(const glm::dvec3& cameraPos, std::vector<Body
         g.tiles = glm::ivec4(b.texTileBase, b.tileCols, b.tileRows, b.texCloudsLiveIndex);
         g.relief = glm::ivec4(b.texNormalIndex, b.texHeightIndex, -1, -1);
         g.reliefParams = glm::vec4(b.heightMinKm, b.heightRangeKm, 1.f, b.detailKind);
+        const bool hasAtmo = b.atmoClass >= 0 && m_atmoLutBase >= 0;
+        g.atmoTex = hasAtmo ? glm::ivec4(m_atmoLutBase + 2 * b.atmoClass, m_atmoLutBase + 2 * b.atmoClass + 1, b.atmoClass, 0)
+                            : glm::ivec4(-1);
+        g.atmoParams = glm::vec4(hasAtmo ? (float)((b.radiusKm + b.atmoTopKm) / b.radiusKm) : 0.f, 0.f, 0.f, 0.f);
         g.patchTex = glm::ivec4(-1);
         g.patchParams = glm::vec4(0.f);
         if (b.activePatch >= 0 && b.activePatch < (int)b.patches.size()) {
@@ -394,6 +413,8 @@ uint32_t SolarSystem::buildGpuList(const glm::dvec3& cameraPos, std::vector<Body
         g.reliefParams = glm::vec4(0.f);
         g.patchTex = glm::ivec4(-1);
         g.patchParams = glm::vec4(0.f);
+        g.atmoTex = glm::ivec4(-1);
+        g.atmoParams = glm::vec4(0.f);
         out.push_back(g);
     }
     return sphereCount;

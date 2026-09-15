@@ -7,7 +7,7 @@
 
 namespace space {
 
-// GPU layout of one rendered body (80 bytes). Mirrors shaders/planet.vert.
+// GPU layout of one rendered body (192 bytes). Mirrors the Body struct in planet.vert/.frag, atmo.frag, cloudvol.frag.
 struct BodyGpu {
     glm::vec4 posRadius; // xyz camera-relative position (world units), w radius
     glm::vec4 rotation;  // quaternion (x,y,z,w) body -> world
@@ -19,6 +19,8 @@ struct BodyGpu {
     glm::vec4 reliefParams; // x height min (km), y height range (km), z normal strength, w detail kind (0 none, 1 lunar, 2 martian)
     glm::ivec4 patchTex;    // active local terrain patch: x albedo, y normal (east/north), z height (-1 = none)
     glm::vec4 patchParams;  // x height min (m), y height range (m), z metres per texel, w 1 when a patch is active
+    glm::ivec4 atmoTex;     // x transmittance LUT, y multiple-scattering LUT (texture indices), z class (-1 = none)
+    glm::vec4 atmoParams;   // x top of the atmosphere / radius
 };
 
 // A local high-resolution terrain patch (e.g. an LROC NAC orthophoto + DTM around a landing site), resampled
@@ -50,7 +52,9 @@ struct Body {
     double axialTiltDeg = 0.0;
     glm::vec3 color{0.5f};
     float seed = 0.f;
-    float atmosphere = 0.f; // rim scattering strength
+    float atmosphere = 0.f; // non-zero: has an atmosphere (cloud and surface passes key on it)
+    int atmoClass = -1;     // row of kAtmo in shaders/atmosphere.glsl (-1 = airless)
+    double atmoTopKm = 0.0; // must match that row's topKm
     int jplIndex = -1;      // row in the JPL approximate-elements table, or -1 for a circular orbit
     float ringInner = 0.f;  // >0: has a ring with this inner/outer ratio
     float ringOuterKm = 0.f;
@@ -115,11 +119,16 @@ public:
     // Julian date for the current wall-clock time.
     static double nowJulianDate();
 
+    // First texture index of the baked atmosphere LUTs (class c: base + 2c transmittance, base + 2c + 1
+    // multiple scattering). Until set, bodies render without atmospheres.
+    void setAtmosphereLuts(int base) { m_atmoLutBase = base; }
+
 private:
     std::vector<Body> m_bodies;
     glm::dmat3 m_eclipticToEngine{1.0};
     glm::dmat3 m_eclipticToEq{1.0};
     double m_jd = 2451545.0;
+    int m_atmoLutBase = -1;
 };
 
 } // namespace space

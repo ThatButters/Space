@@ -242,6 +242,7 @@ void Renderer::init(gfx::Context& ctx, Window& window) {
         m_shadowView = shadow.image.view;
         m_shadowTextureIndex = addTextureWith(std::move(shadow), m_shadowSampler);
     }
+    createAtmosphereLuts();
 
     // Descriptor set layouts.
     VkDescriptorSetLayoutBinding tonemapBindings[] = {
@@ -264,7 +265,14 @@ void Renderer::init(gfx::Context& ctx, Window& window) {
     m_ssboVertexSetLayout = makeSsboLayout(dev, VK_SHADER_STAGE_VERTEX_BIT);
     m_ssboBothSetLayout = makeSsboLayout(dev, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 
-    VkDescriptorPoolSize poolSizes[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8},
+    VkDescriptorSetLayoutBinding starDepthBinding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                                  VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo sdi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    sdi.bindingCount = 1;
+    sdi.pBindings = &starDepthBinding;
+    VK_CHECK(vkCreateDescriptorSetLayout(dev, &sdi, nullptr, &m_starDepthSetLayout));
+
+    VkDescriptorPoolSize poolSizes[] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12},
                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16}};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     dpi.maxSets = 24;
@@ -284,6 +292,7 @@ void Renderer::init(gfx::Context& ctx, Window& window) {
     m_tonemapSet = allocSet(m_tonemapSetLayout);
     m_starSet = allocSet(m_ssboVertexSetLayout);
     m_volumeSet = allocSet(m_ssboFragSetLayout);
+    m_starDepthSet = allocSet(m_starDepthSetLayout);
 
     for (auto& f : m_frames) {
         VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -401,6 +410,7 @@ void Renderer::shutdown() {
     m_models.clear();
     vkDestroyDescriptorPool(dev, m_texturePool, nullptr);
     vkDestroyDescriptorSetLayout(dev, m_textureSetLayout, nullptr);
+    if (m_starDepthSetLayout) vkDestroyDescriptorSetLayout(dev, m_starDepthSetLayout, nullptr);
     vkDestroySampler(dev, m_textureSampler, nullptr);
     vkDestroySampler(dev, m_tileSampler, nullptr);
     vkDestroySampler(dev, m_modelSampler, nullptr);
@@ -659,7 +669,7 @@ void Renderer::createPostResources() {
     VkDevice dev = m_ctx->device();
     const VkExtent2D ext = m_swapchain.extent();
     const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    m_post.create(*m_ctx, ext.width, ext.height, kHdrFormat, usage);
+    m_post.create(*m_ctx, ext.width, ext.height, kHdrFormat, usage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     for (auto& h : m_history) h.create(*m_ctx, ext.width, ext.height, kHdrFormat, usage);
     {
         VkCommandBuffer cmd = m_ctx->beginOneShot();
@@ -670,6 +680,16 @@ void Renderer::createPostResources() {
         m_ctx->endOneShot(cmd);
     }
     m_historyValid = false;
+    {
+        VkDescriptorImageInfo di{m_linearSampler, m_depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet = m_starDepthSet;
+        w.dstBinding = 0;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo = &di;
+        vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+    }
 
     if (!m_postSetLayout) {
         VkDescriptorSetLayoutBinding b[5] = {
@@ -837,16 +857,14 @@ void Renderer::createPipelines() {
     vol.blend = gfx::BlendMode::PremultipliedOver;
     m_volumePipeline = gfx::createGraphicsPipeline(*m_ctx, vol);
 
-    m_starLayout = gfx::createPipelineLayout(*m_ctx, {m_ssboVertexSetLayout, m_ssboBothSetLayout},
+    m_starLayout = gfx::createPipelineLayout(*m_ctx, {m_ssboVertexSetLayout, m_ssboBothSetLayout, m_starDepthSetLayout},
                                              sizeof(StarPushConstants), VK_SHADER_STAGE_VERTEX_BIT);
     gfx::GraphicsPipelineDesc stars;
     stars.vertexShader = "stars.vert.spv";
     stars.fragmentShader = "stars.frag.spv";
-    stars.colorFormat = hdr;
-    stars.depthFormat = depth;
+    stars.colorFormat = hdr; // the upscaled post image; occlusion comes from the depth texture
     stars.layout = m_starLayout;
     stars.blend = gfx::BlendMode::Additive;
-    stars.depthTest = true;
     m_starPipeline = gfx::createGraphicsPipeline(*m_ctx, stars);
 
     m_bodyLayout = gfx::createPipelineLayout(*m_ctx, {m_ssboBothSetLayout, m_textureSetLayout},
@@ -871,7 +889,7 @@ void Renderer::createPipelines() {
     ring.cullFront = false;
     m_ringPipeline = gfx::createGraphicsPipeline(*m_ctx, ring);
 
-    m_atmoLayout = gfx::createPipelineLayout(*m_ctx, {m_ssboBothSetLayout, m_ssboBothSetLayout},
+    m_atmoLayout = gfx::createPipelineLayout(*m_ctx, {m_ssboBothSetLayout, m_ssboBothSetLayout, m_textureSetLayout},
                                              sizeof(BodyPushConstants),
                                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
     gfx::GraphicsPipelineDesc atmo = planet;
@@ -1116,6 +1134,114 @@ void Renderer::replaceTexture(int index, gfx::Texture&& texture) {
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo = &info;
     vkUpdateDescriptorSets(m_ctx->device(), 1, &write, 0, nullptr);
+}
+
+void Renderer::createAtmosphereLuts() {
+    VkDevice dev = m_ctx->device();
+    constexpr uint32_t kClasses = 8; // shaders/atmosphere.glsl ATMO_CLASSES
+    constexpr uint32_t TW = 256, TH = 64, MW = 32, MH = 32;
+    constexpr VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+    VkDescriptorSetLayoutBinding tb[1] = {{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+    VkDescriptorSetLayoutCreateInfo tci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    tci.bindingCount = 1;
+    tci.pBindings = tb;
+    VkDescriptorSetLayout tLayout = VK_NULL_HANDLE, mLayout = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateDescriptorSetLayout(dev, &tci, nullptr, &tLayout));
+    VkDescriptorSetLayoutBinding mb[2] = {{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                                          {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+    VkDescriptorSetLayoutCreateInfo mci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    mci.bindingCount = 2;
+    mci.pBindings = mb;
+    VK_CHECK(vkCreateDescriptorSetLayout(dev, &mci, nullptr, &mLayout));
+    VkPipelineLayout tPl = gfx::createPipelineLayout(*m_ctx, {tLayout}, sizeof(int32_t), VK_SHADER_STAGE_COMPUTE_BIT);
+    VkPipelineLayout mPl = gfx::createPipelineLayout(*m_ctx, {mLayout}, sizeof(int32_t), VK_SHADER_STAGE_COMPUTE_BIT);
+    VkPipeline tPipe = gfx::createComputePipeline(*m_ctx, "atmo_lut_transmittance.comp.spv", tPl);
+    VkPipeline mPipe = gfx::createComputePipeline(*m_ctx, "atmo_lut_multiscatter.comp.spv", mPl);
+
+    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * kClasses},
+                                    {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kClasses}};
+    VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    dpi.maxSets = 2 * kClasses;
+    dpi.poolSizeCount = 2;
+    dpi.pPoolSizes = sizes;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateDescriptorPool(dev, &dpi, nullptr, &pool));
+    auto alloc = [&](VkDescriptorSetLayout layout) {
+        VkDescriptorSetAllocateInfo dsa{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        dsa.descriptorPool = pool;
+        dsa.descriptorSetCount = 1;
+        dsa.pSetLayouts = &layout;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        VK_CHECK(vkAllocateDescriptorSets(dev, &dsa, &set));
+        return set;
+    };
+
+    std::vector<gfx::Texture> trans(kClasses), ms(kClasses);
+    VkCommandBuffer cmd = m_ctx->beginOneShot();
+    for (uint32_t c = 0; c < kClasses; ++c) {
+        trans[c].image.create(*m_ctx, TW, TH, VK_FORMAT_R16G16B16A16_SFLOAT, usage);
+        ms[c].image.create(*m_ctx, MW, MH, VK_FORMAT_R16G16B16A16_SFLOAT, usage);
+        for (gfx::Image* img : {&trans[c].image, &ms[c].image})
+            gfx::transitionImage(cmd, img->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_NONE,
+                                 VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        const int32_t cls = (int32_t)c;
+
+        VkDescriptorSet tSet = alloc(tLayout);
+        VkDescriptorImageInfo tOut{VK_NULL_HANDLE, trans[c].image.view, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet tw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        tw.dstSet = tSet;
+        tw.dstBinding = 0;
+        tw.descriptorCount = 1;
+        tw.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        tw.pImageInfo = &tOut;
+        vkUpdateDescriptorSets(dev, 1, &tw, 0, nullptr);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tPipe);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tPl, 0, 1, &tSet, 0, nullptr);
+        vkCmdPushConstants(cmd, tPl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cls), &cls);
+        vkCmdDispatch(cmd, (TW + 7) / 8, (TH + 7) / 8, 1);
+        gfx::transitionImage(cmd, trans[c].image.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+        VkDescriptorSet mSet = alloc(mLayout);
+        VkDescriptorImageInfo mOut{VK_NULL_HANDLE, ms[c].image.view, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo mIn{m_linearSampler, trans[c].image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet mw[2];
+        for (int k = 0; k < 2; ++k) {
+            mw[k] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            mw[k].dstSet = mSet;
+            mw[k].dstBinding = (uint32_t)k;
+            mw[k].descriptorCount = 1;
+            mw[k].descriptorType = k == 0 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            mw[k].pImageInfo = k == 0 ? &mOut : &mIn;
+        }
+        vkUpdateDescriptorSets(dev, 2, mw, 0, nullptr);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, mPipe);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, mPl, 0, 1, &mSet, 0, nullptr);
+        vkCmdPushConstants(cmd, mPl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cls), &cls);
+        vkCmdDispatch(cmd, (MW + 7) / 8, (MH + 7) / 8, 1);
+        gfx::transitionImage(cmd, ms[c].image.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+    m_ctx->endOneShot(cmd);
+
+    vkDestroyPipeline(dev, tPipe, nullptr);
+    vkDestroyPipeline(dev, mPipe, nullptr);
+    vkDestroyPipelineLayout(dev, tPl, nullptr);
+    vkDestroyPipelineLayout(dev, mPl, nullptr);
+    vkDestroyDescriptorPool(dev, pool, nullptr);
+    vkDestroyDescriptorSetLayout(dev, tLayout, nullptr);
+    vkDestroyDescriptorSetLayout(dev, mLayout, nullptr);
+
+    m_atmoLutBase = (int)m_textures.size();
+    for (uint32_t c = 0; c < kClasses; ++c) {
+        addTextureWith(std::move(trans[c]), m_linearSampler);
+        addTextureWith(std::move(ms[c]), m_linearSampler);
+    }
+    LOG_INFO("Atmospheres: {} classes baked (transmittance {}x{}, multiple scattering {}x{})", kClasses, TW, TH, MW, MH);
 }
 
 int Renderer::addTextureWith(gfx::Texture&& texture, VkSampler sampler) {
@@ -1469,11 +1595,11 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             vkCmdDrawIndexed(cmd, m_sphereIndexCount, spheres, 0, 0, 0);
 
             // Atmosphere shells over the same instances (bodies without one collapse in the vertex shader).
-            bpc.params.z = kAtmosphereShell;
+            bpc.params.z = -1.f; // each body's own atmosphere top
             bpc.params.w = scene.auroraStrength;
-            VkDescriptorSet atmoSets[] = {frame.bodySet, frame.frameSet};
+            VkDescriptorSet atmoSets[] = {frame.bodySet, frame.frameSet, m_textureSet};
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_atmoPipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_atmoLayout, 0, 2, atmoSets, 0, nullptr);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_atmoLayout, 0, 3, atmoSets, 0, nullptr);
             vkCmdPushConstants(cmd, m_atmoLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                sizeof(bpc), &bpc);
             vkCmdDrawIndexed(cmd, m_sphereIndexCount, spheres, 0, 0, 0);
@@ -1566,19 +1692,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             vkCmdDraw(cmd, 6, (uint32_t)std::min<size_t>(scene.crafts.size(), kMaxCrafts), 0, 0);
         }
 
-        // Stars
-        if (m_starCount > 0 && settings.drawStars) {
-            StarPushConstants spc{};
-            spc.viewProj = viewProj;
-            spc.camPos = glm::vec4(glm::vec3(camera.position), 0.f);
-            spc.params = glm::vec4((float)rext.width, (float)rext.height, settings.starBrightness,
-                                   settings.starMaxRadiusPx);
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_starPipeline);
-            VkDescriptorSet starSets[] = {m_starSet, frame.frameSet};
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_starLayout, 0, 2, starSets, 0, nullptr);
-            vkCmdPushConstants(cmd, m_starLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(spc), &spc);
-            vkCmdDraw(cmd, m_starCount * 6, 1, 0, 0);
-        }
+        // Stars: drawn after the upscale (see the post pass).
 
         // Constellation figures
         if (m_lineVertexCount > 0 && scene.constellationIntensity > 0.f && !scene.constellationHighlight.empty()) {
@@ -1703,6 +1817,45 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
                              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        // Stars at display resolution, unjittered, after DLSS / TAA: a star a pixel or two across is
+        // exactly what temporal reconstruction throws away while the camera moves. Bodies hide them via
+        // the render-resolution depth buffer, sampled in the fragment shader.
+        if (m_starCount > 0 && settings.drawStars) {
+            gfx::transitionImage(cmd, m_post.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
+            VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            color.imageView = m_post.view;
+            color.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+            ri.renderArea = outScissor;
+            ri.layerCount = 1;
+            ri.colorAttachmentCount = 1;
+            ri.pColorAttachments = &color;
+            vkCmdBeginRendering(cmd, &ri);
+            vkCmdSetViewport(cmd, 0, 1, &outViewport);
+            vkCmdSetScissor(cmd, 0, 1, &outScissor);
+            StarPushConstants spc{};
+            spc.viewProj = viewProjClean;
+            // w: display pixels per render pixel, so stars keep the size they were tuned at.
+            spc.camPos = glm::vec4(glm::vec3(camera.position), (float)ext.height / (float)rext.height);
+            spc.params = glm::vec4((float)ext.width, (float)ext.height, settings.starBrightness,
+                                   settings.starMaxRadiusPx);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_starPipeline);
+            VkDescriptorSet starSets[] = {m_starSet, frame.frameSet, m_starDepthSet};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_starLayout, 0, 3, starSets, 0, nullptr);
+            vkCmdPushConstants(cmd, m_starLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(spc), &spc);
+            vkCmdDraw(cmd, m_starCount * 6, 1, 0, 0);
+            vkCmdEndRendering(cmd);
+            gfx::transitionImage(cmd, m_post.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        }
         m_historyIndex = 1 - m_historyIndex;
         m_historyValid = settings.taa || m_dlssActive;
         m_prevViewProj = viewProjClean;

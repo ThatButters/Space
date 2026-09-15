@@ -84,6 +84,7 @@ private:
     double m_scrubRate = 0.0;  // simulated seconds per real second from scrubbing (0 = not scrubbing)
     std::string m_liveCloudDate; // the day today's cloud imagery was taken
     void setIntroClock();       // dawn at the Cape, today
+    bool m_atmospheres = true;  // --no-atmospheres renders every body airless
     // Near a world or beside a spacecraft the clock is held close to real time, so taking the controls
     // never leaves you riding a station that laps Earth every three seconds.
     bool m_calmClock = true;

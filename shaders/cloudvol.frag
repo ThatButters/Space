@@ -1,6 +1,7 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : enable
 #include "common.glsl"
+#include "atmosphere.glsl"
 
 // Volumetric clouds for Earth, seen from within a few thousand kilometres: the cloud map (and today's
 // satellite cover) sets where cloud is, 3D gradient noise gives it cauliflower tops and ragged edges, and
@@ -19,9 +20,12 @@ struct Body {
     vec4 reliefParams;
     ivec4 patchTex;
     vec4 patchParams;
+    ivec4 atmoTex;
+    vec4 atmoParams;
 };
 layout(std430, set = 0, binding = 0) readonly buffer Bodies { Body bodies[]; };
 layout(set = 1, binding = 0) uniform sampler2D uTex[1024];
+#include "atmosphere_path.glsl"
 
 layout(push_constant) uniform PushConstants {
     mat4 viewProj;
@@ -173,13 +177,26 @@ void main() {
         float lit = night ? 0.0 : (0.5 * exp(-odSun) + 0.5 * exp(-odSun * 0.12)) * powder;
         vec3 up = normalize(p);
         float day = smoothstep(-0.08, 0.25, dot(up, sunDir)); // no sky fill on the night side
-        vec3 sun = vec3(1.0, 0.98, 0.95) * lit * phase * 0.4;
+        vec3 sunT = vec3(1.0); // reddened near the terminator by the air above the clouds
+        if (b.atmoTex.x >= 0) {
+            AtmoClass ac = kAtmo[b.atmoTex.z];
+            sunT = textureLod(uTex[nonuniformEXT(b.atmoTex.x)],
+                              atmoTransmittanceUv(ac.radiusKm, ac.radiusKm + ac.topKm, length(p) * ac.radiusKm, dot(up, sunDir)), 0.0).rgb;
+        }
+        vec3 sun = vec3(1.0, 0.98, 0.95) * lit * phase * 0.4 * sunT;
         vec3 sky = vec3(0.30, 0.45, 0.75) * (0.07 + 0.2 * hn) * day;   // blue fill from above
         vec3 ground = vec3(0.10, 0.11, 0.12) * (0.25 * (1.0 - hn)) * day; // a little bounce from below
         float a = 1.0 - exp(-kSigmaPerKm * dens * dsKm);
         col += T * a * (sun + sky + ground) * irradiance;
         T *= 1.0 - a;
         if (T < 0.015) break;
+    }
+    if (b.atmoTex.x >= 0) {
+        // Aerial perspective between the camera and the cloud (the ground behind carries its own).
+        AtmoClass ac = kAtmo[b.atmoTex.z];
+        vec3 ins, tr;
+        atmoPathScatter(b.atmoTex, ro * ac.radiusKm, rd, 0.5 * (t0 + t1) * ac.radiusKm, sunDir, 10, jitter, ins, tr);
+        col = col * tr + ins * irradiance * PI * (1.0 - T);
     }
     outColor = vec4(col * vol, 1.0 - (1.0 - T) * vol);
 }

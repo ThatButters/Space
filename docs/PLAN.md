@@ -32,8 +32,8 @@ aerial perspective.
 
 | # | Work package | Effort | Proof |
 |---|---|---|---|
-| 1.1 | **Precomputed atmosphere (Bruneton 2017)**: transmittance (256×64), single + multiple scattering (32×128×32×8), irradiance LUTs baked per atmosphere class (Earth, Mars, Venus, Titan, giants) in compute at startup; real scale heights (8 km / 1.2 km Mie), ozone layer for Earth's blue zenith. | 3 | ISS stop: thin bright limb, correct sky gradient, no blue cast on nadir ground. Side-by-side with an ISS photo of the same geometry. |
-| 1.2 | **Aerial perspective** applied to the ground, the volumetric clouds and spacecraft below ~100 km (transmittance + in-scatter from the LUTs), replacing the per-pass haze hacks. | 1 | Saturn V stop: coast fades blue with distance; rocket stays crisp. |
+| ~~1.1~~ ✅ | ~~**Precomputed atmosphere (Bruneton 2017)**: transmittance (256×64), single + multiple scattering (32×128×32×8), irradiance LUTs baked per atmosphere class (Earth, Mars, Venus, Titan, giants) in compute at startup; real scale heights (8 km / 1.2 km Mie), ozone layer for Earth's blue zenith.~~ Built as Hillaire 2020 instead: transmittance + multiple-scattering LUTs per class, sky ray marched per pixel. | 3 | ISS stop: thin bright limb, correct sky gradient, no blue cast on nadir ground. Side-by-side with an ISS photo of the same geometry. |
+| 1.2 🟡 | **Aerial perspective** applied to the ground, the volumetric clouds and spacecraft below ~100 km (transmittance + in-scatter from the LUTs), replacing the per-pass haze hacks. Ground and clouds done; spacecraft still pending. | 1 | Saturn V stop: coast fades blue with distance; rocket stays crisp. |
 | 1.3 | **The Sun**: HMI continuum granulation texture, limb darkening from a fit, corona (Baumbach model, streamers from noise) visible when the disc is occluded or off-frame, prominences at the limb, lens flare from a ghost/halo model replacing the streak sprite. Retune HDR peak so the disc is a disc, not a white hole. | 1 | Parker stop: disc with granulation; corona visible past the limb; flare ghosts move opposite the Sun. |
 
 ## Phase 2 — Clouds, finished (≈2.5 days)

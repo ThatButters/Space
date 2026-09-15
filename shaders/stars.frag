@@ -4,13 +4,19 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 1) in vec3 vColor;
 layout(location = 2) in float vRadius;
+layout(location = 3) flat in vec2 vTarget;
 layout(location = 0) out vec4 outColor;
+// Scene depth at render resolution (reversed-Z, 0 = nothing drawn): anything there hides the star.
+layout(set = 2, binding = 0) uniform sampler2D uDepth;
 
 const float PI = 3.14159265359;
 
 void main() {
     float r2 = dot(vUV, vUV);
     if (r2 > 1.0) discard;
+    ivec2 depthSize = textureSize(uDepth, 0);
+    ivec2 texel = clamp(ivec2(gl_FragCoord.xy * vec2(depthSize) / vTarget), ivec2(0), depthSize - 1);
+    if (texelFetch(uDepth, texel, 0).r > 0.0) discard;
 
     // sigma = radius/3 so the quad edge sits at 3 sigma.
     float sigmaPx = vRadius / 3.0;

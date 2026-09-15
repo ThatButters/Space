@@ -162,6 +162,8 @@ public:
     bool hdrActive() const { return m_swapchain.isHdr(); }
     bool dlssAvailable() const { return m_dlss.available(); }
     float autoExposureValue() const { return m_autoExposure; }
+    // First texture index of the baked atmosphere LUTs (see shaders/atmosphere.glsl).
+    int atmosphereLutBase() const { return m_atmoLutBase; }
     bool dlssActive() const { return m_dlssActive; }
     VkExtent2D renderExtent() const { return m_renderExtent; }
 
@@ -213,6 +215,9 @@ private:
     void recordBloom(VkCommandBuffer cmd, const RenderSettings& settings);
     void recordShadowPass(VkCommandBuffer cmd, const FrameScene& scene);
     int addTextureWith(gfx::Texture&& texture, VkSampler sampler);
+    // Bakes every atmosphere class's transmittance and multiple-scattering LUTs into the texture array.
+    void createAtmosphereLuts();
+    int m_atmoLutBase = -1;
 
     gfx::Context* m_ctx = nullptr;
     Window* m_window = nullptr;
@@ -305,6 +310,10 @@ private:
     VkDescriptorSet m_starSet = VK_NULL_HANDLE;
     VkPipelineLayout m_starLayout = VK_NULL_HANDLE;
     VkPipeline m_starPipeline = VK_NULL_HANDLE;
+    // Stars are drawn after DLSS / TAA at display resolution (sub-pixel points do not survive temporal
+    // reconstruction in motion); bodies still hide them through the render-resolution depth buffer.
+    VkDescriptorSetLayout m_starDepthSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet m_starDepthSet = VK_NULL_HANDLE;
 
     // Volumetrics
     gfx::Buffer m_volumeBuffer;

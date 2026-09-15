@@ -1,0 +1,30 @@
+#version 460
+#include "common.glsl"
+#include "atmosphere.glsl"
+// Bakes one atmosphere class's transmittance LUT: from a height, along a zenith cosine, to the top of the
+// atmosphere. The ground is not an occluder here; the planet's shadow is tested where the LUT is used.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D uOut;
+layout(push_constant) uniform PushConstants { int cls; } pc;
+
+void main() {
+    ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(id, ivec2(ATMO_T_SIZE)))) return;
+    AtmoClass a = kAtmo[pc.cls];
+    float R = a.radiusKm, Rt = R + a.topKm;
+    float r, mu;
+    atmoTransmittanceParams(R, Rt, vec2(id), r, mu);
+    vec3 ro = vec3(0.0, r, 0.0);
+    vec3 rd = vec3(sqrt(max(1.0 - mu * mu, 0.0)), mu, 0.0);
+    float dist = max(atmoRaySphere(ro, rd, Rt).y, 0.0);
+    const int N = 64;
+    float dt = dist / float(N);
+    vec3 depth = vec3(0.0);
+    for (int i = 0; i < N; ++i) {
+        vec3 p = ro + rd * ((float(i) + 0.5) * dt);
+        vec3 sR, sM;
+        depth += atmoExtinction(a, length(p) - R, sR, sM) * dt;
+    }
+    imageStore(uOut, id, vec4(exp(-depth), 1.0));
+}

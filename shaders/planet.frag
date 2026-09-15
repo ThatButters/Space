@@ -1,6 +1,7 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : enable
 #include "common.glsl"
+#include "atmosphere.glsl"
 
 // Sun, planets and moons. The mesh is only a proxy slightly larger than the body (drawn back faces
 // only); every pixel ray-traces the exact sphere in double precision and writes its true depth, so
@@ -20,9 +21,12 @@ struct Body {
     vec4 reliefParams;  // height min km, height range km, normal strength, detail kind
     ivec4 patchTex;     // local terrain patch: albedo, normal, height (-1 = none)
     vec4 patchParams;   // height min m, height range m, metres per texel, 1 when active
+    ivec4 atmoTex;      // transmittance LUT, multiple-scattering LUT, atmosphere class (-1 = none)
+    vec4 atmoParams;    // x top of the atmosphere / radius
 };
 layout(std430, set = 0, binding = 0) readonly buffer Bodies { Body bodies[]; };
 layout(set = 1, binding = 0) uniform sampler2D uTex[1024];
+#include "atmosphere_path.glsl"
 
 layout(push_constant) uniform PushConstants {
     mat4 viewProj;
@@ -614,7 +618,15 @@ void main() {
             }
         }
     }
-    vec3 color = albedo * diffuse * irradiance;
+    // Sunlight through the body's own atmosphere: dimmed and reddened as the Sun drops toward the horizon
+    // (the colour band along the terminator, sunset light on the ground).
+    vec3 sunT = vec3(1.0);
+    if (b.atmoTex.x >= 0) {
+        AtmoClass ac = kAtmo[b.atmoTex.z];
+        sunT = textureLod(uTex[nonuniformEXT(b.atmoTex.x)],
+                          atmoTransmittanceUv(ac.radiusKm, ac.radiusKm + ac.topKm, ac.radiusKm + 0.05, dot(N, L)), 0.0).rgb;
+    }
+    vec3 color = albedo * diffuse * irradiance * sunT;
     if (type == ROCKY && b.params.z <= 0.0) {
         // Shadows on airless ground are dark, not black: sunlit regolith all around bounces a little in.
         float daylit = smoothstep(-0.02, 0.05, dot(N, L));
@@ -712,7 +724,7 @@ void main() {
             cloudRim = edge * forward * 0.35 * volW;
         }
         // Cloud albedo ~0.85 with sky-blue fill in the shaded flanks, so towers read instead of clipping white.
-        vec3 cloudCol = (vec3(0.85) * diffuse * cloudShade + vec3(0.10, 0.13, 0.18) * volW * max(dot(N, L), 0.0)) * irradiance;
+        vec3 cloudCol = (vec3(0.85) * diffuse * cloudShade + vec3(0.10, 0.13, 0.18) * volW * max(dot(N, L), 0.0)) * irradiance * sunT;
         color = mix(color, cloudCol, clouds * 0.9) + spec * irradiance + vec3(cloudRim) * irradiance * max(dot(N, L), 0.0);
         float night = smoothstep(0.05, -0.15, dot(N, L));
         // City lights: sodium-orange cores that bloom, from the Black Marble map with its glow pulled in
@@ -743,15 +755,26 @@ void main() {
         float cover = smoothstep(48.0, 62.0, altKm);
         vec3 deck = sampleMap(b.tex.z, uv - vec2(time * 2.6e-6, 0.0)).rgb;
         float deckLit = clamp((dot(N, L) + 0.1) / 1.1, 0.0, 1.0) * crafts;
-        color = mix(color, deck * deckLit * irradiance, cover);
+        color = mix(color, deck * deckLit * irradiance * sunT, cover);
     }
 
     // Atmosphere rim: fresnel-weighted, coloured by the body, brighter on the day side.
     float fres = pow(1.0 - max(dot(N, V), 0.0), 3.5);
     vec3 atmoCol = type == EARTH ? vec3(0.35, 0.55, 1.0) : b.color.rgb * 0.8 + 0.2;
     float dayside = clamp(dot(N, L) * 0.5 + 0.5, 0.0, 1.0);
-    color += atmoCol * fres * b.params.z * irradiance * (0.15 + 0.85 * dayside) * 0.15;
+    if (b.atmoTex.z < 0) color += atmoCol * fres * b.params.z * irradiance * (0.15 + 0.85 * dayside) * 0.15; // else: atmo.frag
 
+    // Aerial perspective: the air between the camera and this point dims it (blue most) and adds its own
+    // scattered light. The atmosphere shell pass only draws the sky beyond the ground.
+    if (b.atmoTex.x >= 0 && vBoost <= 1.0) {
+        AtmoClass ac = kAtmo[b.atmoTex.z];
+        float kmPerUnit = ac.radiusKm / b.posRadius.w;
+        vec3 ins, tr;
+        float jit = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)) + fract(time * 0.37) * 91.7) * 43758.5453);
+        atmoPathScatter(b.atmoTex, -b.posRadius.xyz * kmPerUnit, rd, length(hit) * kmPerUnit,
+                        normalize(pc.sunPos.xyz - b.posRadius.xyz), 12, jit, ins, tr);
+        color = color * tr + ins * irradiance * PI;
+    }
     // Unresolved body drawn larger than life: same total light, spread over the larger disc.
     color /= vBoost * vBoost;
     outColor = vec4(color, 1.0);

@@ -1,10 +1,15 @@
 #version 460
+#extension GL_EXT_nonuniform_qualifier : enable
 #include "common.glsl"
 #include "frame.glsl"
+#include "atmosphere.glsl"
 FRAME_DATA_BLOCK(1)
-// Atmosphere shell: single-scattering Rayleigh (plus a little Mie forward scatter) integrated along
-// the view ray through a thin shell around the body. Drawn on a sphere slightly larger than the
-// planet, premultiplied over: rgb = in-scattered sunlight, a = transmittance applied to what is behind.
+// Atmospheres, physically based: light scattered toward the camera is ray marched per pixel through the
+// body's real atmosphere (Rayleigh, aerosols and absorbers at their real scale heights), with the Sun's
+// transmittance and all the higher scattering orders read from lookup tables baked at startup
+// (atmosphere.glsl). Drawn on a shell at the top of each atmosphere, premultiplied over what lies behind:
+// rgb = scattered light, a = transmittance. From afar it is the thin bright limb; looking down, the haze
+// over the ground; from inside, the sky. Earth also carries the aurora and the airglow layer.
 
 struct Body {
     vec4 posRadius;
@@ -17,13 +22,16 @@ struct Body {
     vec4 reliefParams;  // height min km, height range km, normal strength, detail kind
     ivec4 patchTex;     // local terrain patch: albedo, normal, height (-1 = none)
     vec4 patchParams;   // height min m, height range m, metres per texel, 1 when active
+    ivec4 atmoTex;      // transmittance LUT, multiple-scattering LUT, atmosphere class (-1 = none)
+    vec4 atmoParams;    // x top of the atmosphere / radius
 };
 layout(std430, set = 0, binding = 0) readonly buffer Bodies { Body bodies[]; };
+layout(set = 2, binding = 0) uniform sampler2D uTex[1024];
 
 layout(push_constant) uniform PushConstants {
     mat4 viewProj;
     vec4 sunPos;
-    vec4 params; // x time, y sun radiance, z shell scale, w aurora strength
+    vec4 params; // x time, y sun radiance, z shell (< 0: each body's own atmosphere), w aurora strength
 } pc;
 
 layout(location = 0) in vec3 vWorldPos; // camera-relative
@@ -80,116 +88,100 @@ vec3 aurora(vec3 pLocal, vec3 sunLocal, float h, float time, float strength) {
     return c * oval * shape * strength * music;
 }
 
-const int VIEW_STEPS = 12;
-const int SUN_STEPS = 4;
-
-// Returns (near, far) intersections of a ray with a sphere at the origin, or far < near if none.
-vec2 raySphere(vec3 ro, vec3 rd, float r) {
-    float b = dot(ro, rd);
-    float c = dot(ro, ro) - r * r;
-    float d = b * b - c;
-    if (d < 0.0) return vec2(1.0, -1.0);
-    float s = sqrt(d);
-    return vec2(-b - s, -b + s);
+// Sample positions along [tA, tB], densest at tc: where a grazing ray runs deepest into the atmosphere,
+// or at the ground when looking down.
+float atmoEdge(float u, float tA, float tc, float tB) {
+    float w = (tc - tA) / max(tB - tA, 1e-6);
+    if (u <= w) {
+        float k = 1.0 - u / max(w, 1e-6);
+        return tc - (tc - tA) * k * k;
+    }
+    float k = (u - w) / max(1.0 - w, 1e-6);
+    return tc + (tB - tc) * k * k;
 }
 
 void main() {
     Body b = bodies[vBody];
     int type = int(b.params.x + 0.5);
-    float strength = b.params.z;
+    int cls = b.atmoTex.z;
+    if (cls < 0) discard;
+    AtmoClass a = kAtmo[cls];
+    float R = a.radiusKm, Rt = R + a.topKm;
 
-    // Per-body scattering: coefficients per planet radius, scale height as a fraction of the radius.
-    // Exaggerated relative to reality (Earth's is 0.13%) so the shell reads at explorer distances.
-    vec3 betaR;
-    float betaM, H;
-    // Scale height 1.2% of the radius (10x Earth's, so the shell reads at explorer distances); the
-    // coefficients give a vertical optical depth of ~0.1 in the blue for Earth, ~2 at the grazing limb.
-    if (type == 2)      { betaR = vec3(1.4, 3.3, 8.0);  betaM = 0.4; H = 0.012; } // Earth
-    else if (type == 3) { betaR = vec3(0.5, 0.7, 1.0);  betaM = 0.3; H = 0.008; } // gas giants: thin, warm haze
-    else if (type == 4) { betaR = vec3(0.8, 1.8, 3.2);  betaM = 0.5; H = 0.012; } // ice giants
-    else {
-        // Dusty air (Venus / Mars / Titan): scattering takes the planet's own tint, so Mars gets its
-        // butterscotch daytime sky and blue-tinged sunsets, Titan its orange haze.
-        vec3 tint = normalize(b.color.rgb + 0.05) * 1.7;
-        betaR = vec3(3.0, 2.4, 1.6) * mix(vec3(1.0), tint, 0.7);
-        betaM = 1.0; H = 0.010;
-    }
-    betaR *= strength;
-    betaM *= strength;
+    // Geometry in kilometres, relative to the planet's centre.
+    float kmPerUnit = R / b.posRadius.w;
+    vec3 centre = b.posRadius.xyz;
+    vec3 ro = -centre * kmPerUnit;
+    vec3 rd = normalize(vWorldPos);
 
-    // Geometry in planet-radius units, camera-relative.
-    float R = b.posRadius.w;
-    vec3 center = b.posRadius.xyz;
-    vec3 ro = -center / R;              // camera position relative to the planet centre
-    vec3 rd = normalize(vWorldPos); // view ray from the camera through this fragment
-    float Ra = pc.params.z;             // shell radius (planet = 1)
-
-    // From outside only the near (front) faces of the shell are drawn; from inside only the far faces, so
-    // the sky over a planet's surface is the same integral seen from within.
-    bool inside = dot(ro, ro) < Ra * Ra;
+    // From outside only the near faces of the shell draw; from inside only the far faces.
+    bool inside = dot(ro, ro) < Rt * Rt;
     if (inside == gl_FrontFacing) discard;
-    vec2 hit = raySphere(ro, rd, Ra);
+    vec2 hit = atmoRaySphere(ro, rd, Rt);
     if (hit.y <= 0.0) discard;
     float tA = max(hit.x, 0.0), tB = hit.y;
-    vec2 ground = raySphere(ro, rd, 1.0);
-    bool hitsGround = ground.x > 0.0 && ground.x < tB;
-    if (hitsGround) tB = ground.x;
+    vec2 ground = atmoRaySphere(ro, rd, R);
+    // Over the ground the surface and cloud shaders carry the aerial perspective; here only the aurora is
+    // added there (seen from above), and the sky and limb everywhere else.
+    bool groundHit = ground.x > 0.0 && ground.x < tB;
+    if (groundHit && (type != 2 || pc.params.w <= 0.0)) discard;
+    if (groundHit) tB = ground.x;
+    if (tB <= tA) discard;
 
-    vec3 sunDir = normalize(pc.sunPos.xyz - center);
-    float ds = (tB - tA) / float(VIEW_STEPS);
-    vec3 inscatter = vec3(0.0);
-    vec3 auroraLight = vec3(0.0);
-    float odView = 0.0;
+    vec3 sunDir = normalize(pc.sunPos.xyz - centre);
     float mu = dot(rd, sunDir);
-    float phaseR = 3.0 / (16.0 * 3.14159265) * (1.0 + mu * mu);
-    float g = 0.76;
-    float phaseM = 3.0 / (8.0 * 3.14159265) * (1.0 - g * g) * (1.0 + mu * mu) /
-                   ((2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
+    float phaseR = atmoPhaseRayleigh(mu);
+    float phaseM = atmoPhaseMie(a.mieG, mu);
 
-    for (int i = 0; i < VIEW_STEPS; ++i) {
-        float t = tA + (float(i) + 0.5) * ds;
+    const int STEPS = 40;
+    float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)) + fract(pc.params.x * 0.37) * 91.7) * 43758.5453);
+    float tc = clamp(-dot(ro, rd), tA, tB);
+    vec3 L = vec3(0.0), T = vec3(1.0);
+    vec3 auroraLight = vec3(0.0);
+    float tPrev = tA;
+    for (int i = 0; i < STEPS; ++i) {
+        float tNext = atmoEdge(float(i + 1) / float(STEPS), tA, tc, tB);
+        float dt = tNext - tPrev;
+        float t = tPrev + dt * jitter;
+        tPrev = tNext;
+        if (dt <= 0.0) continue;
         vec3 p = ro + rd * t;
-        float h = max(length(p) - 1.0, 0.0);
-        float dens = exp(-h / H);
-        odView += dens * ds;
-
-        // Optical depth toward the Sun from this sample.
-        vec2 sunHit = raySphere(p, sunDir, Ra);
-        float sunLen = max(sunHit.y, 0.0);
-        float dsSun = sunLen / float(SUN_STEPS);
-        float odSun = 0.0;
-        bool shadowed = raySphere(p, sunDir, 1.0).y > 0.0 && raySphere(p, sunDir, 1.0).x > 0.0;
-        for (int j = 0; j < SUN_STEPS; ++j) {
-            vec3 q = p + sunDir * (float(j) + 0.5) * dsSun;
-            odSun += exp(-max(length(q) - 1.0, 0.0) / H) * dsSun;
-        }
-        vec3 transmittance = exp(-(betaR * (odView + odSun) + betaM * (odView + odSun) * 1.1));
-        if (shadowed) transmittance *= 0.05; // night side: only a little multiple scattering
-        inscatter += transmittance * dens * ds * (betaR * phaseR + betaM * phaseM);
+        float pr = length(p);
+        vec3 up = p / pr;
+        vec3 sR, sM;
+        vec3 ext = atmoExtinction(a, pr - R, sR, sM);
+        float muS = dot(up, sunDir);
+        // In the planet's shadow past the terminator, softened over about half a scale height.
+        float along = dot(p, sunDir);
+        float miss = length(p - along * sunDir);
+        float lit = along > 0.0 ? 1.0 : smoothstep(R - 0.5 * a.rayleighH, R + 0.5 * a.rayleighH, miss);
+        vec3 sunT = textureLod(uTex[nonuniformEXT(b.atmoTex.x)], atmoTransmittanceUv(R, Rt, pr, muS), 0.0).rgb * lit;
+        vec3 ms = textureLod(uTex[nonuniformEXT(b.atmoTex.y)], atmoMsUv(R, Rt, pr, muS), 0.0).rgb;
+        vec3 S = (sR * phaseR + sM * phaseM) * sunT + (sR + sM) * ms;
+        vec3 stepT = exp(-ext * dt);
+        if (!groundHit) L += T * S * (vec3(1.0) - stepT) / max(ext, vec3(1e-12));
 
         if (type == 2 && pc.params.w > 0.0) {
-            // Aurora is self-emissive: not scaled by sunlight, brighter on the night side.
-            vec3 pl = rotateInv(b.rotation, p);
+            // Aurora and airglow are self-emissive: not scaled by sunlight, brighter on the night side.
+            vec3 pl = rotateInv(b.rotation, p / R);
             vec3 sl = normalize(rotateInv(b.rotation, sunDir));
-            float night = shadowed ? 1.0 : 0.25;
-            auroraLight += exp(-betaR * odView) * aurora(pl, sl, h, pc.params.x, pc.params.w) * ds * night;
+            float hKm = pr - R;
+            float dsR = dt / 6371.0;
+            float night = lit < 0.5 ? 1.0 : 0.25;
+            auroraLight += T * aurora(pl, sl, hKm / 6371.0, pc.params.x, pc.params.w) * dsR * night;
             // Airglow: the faint green oxygen layer near 90 km that rims the night limb in photos from orbit.
-            float kmA = h * 6371.0;
-            float glow = exp(-pow((kmA - 92.0) / 16.0, 2.0)) * (shadowed ? 1.0 : 0.15); // wide enough not to band
-            auroraLight += exp(-betaR * odView) * vec3(0.18, 0.55, 0.28) * glow * ds * 0.005;
+            float glow = exp(-pow((hKm - 92.0) / 16.0, 2.0)) * (lit < 0.5 ? 1.0 : 0.15);
+            auroraLight += T * vec3(0.18, 0.55, 0.28) * glow * dsR * 0.005;
         }
+        if (!groundHit) T *= stepT;
     }
 
-    vec3 T = exp(-(betaR + betaM * 1.1) * odView);
-    // Sunlight strength: the same compressed inverse-square the surfaces use.
+    // Sunlight: the same compressed inverse-square the surfaces use. Surfaces are lit as
+    // albedo x cos x irradiance (no 1/pi), so scattered radiance carries the same factor of pi.
     const float AU = 4.848e-6;
-    float sunDist2 = max(dot(pc.sunPos.xyz - center, pc.sunPos.xyz - center), 1e-30);
+    vec3 toSun = pc.sunPos.xyz - centre;
+    float sunDist2 = max(dot(toSun, toSun), 1e-30);
     float irradiance = pow((AU * AU) / sunDist2, 0.3);
-    // The limb needs a boost to read at explorer distances, but the same boost turns the ground blue
-    // when looking down from orbit: scale it by the optical depth of the path (~0.012 vertical, ~0.27
-    // grazing, in radius units) so nadir views keep the surface and the limb keeps its glow.
-    float boost = mix(1.0, 5.0, smoothstep(0.02, 0.16, odView));
-    vec3 sunColor = vec3(1.0, 0.98, 0.95) * irradiance * boost;
-
-    outColor = vec4(inscatter * sunColor + auroraLight * 40.0, dot(T, vec3(0.3333)));
+    vec3 light = L * irradiance * PI + auroraLight * 40.0;
+    outColor = vec4(light, dot(T, vec3(1.0 / 3.0)));
 }

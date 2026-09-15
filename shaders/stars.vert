@@ -21,6 +21,7 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) out vec2 vUV;       // -1..1 across the quad
 layout(location = 1) out vec3 vColor;    // radiance-weighted colour
 layout(location = 2) out float vRadius;  // quad half-size in pixels
+layout(location = 3) flat out vec2 vTarget; // target size in pixels (to find the depth texel)
 
 const vec2 kCorners[6] = vec2[](vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, -1), vec2(1, 1), vec2(-1, 1));
 
@@ -28,6 +29,7 @@ void main() {
     uint id = uint(gl_VertexIndex) / 6u;
     uint corner = uint(gl_VertexIndex) % 6u;
     Star s = stars[id];
+    vTarget = pc.params.xy;
 
     vec3 rel = s.posRadiance.xyz - pc.camPos.xyz;
     float d2 = max(dot(rel, rel), 1e-8);
@@ -49,7 +51,10 @@ void main() {
 
     // Radius grows logarithmically with flux; floor keeps faint stars at least a couple of pixels
     // so they do not flicker, ceiling stops nearby stars from filling the screen.
-    float radius = clamp(1.3 + 0.45 * log2(1.0 + (flux + ringLight) * 6.0), 1.3, pc.params.w);
+    // camPos.w: display pixels per render pixel (the sizes were tuned at render resolution).
+    float pxScale = pc.camPos.w > 0.0 ? pc.camPos.w : 1.0;
+    float radius = clamp(1.3 + 0.45 * log2(1.0 + (flux + ringLight) * 6.0), 1.3, pc.params.w) * pxScale;
+    vTarget = pc.params.xy;
 
     vec2 c = kCorners[corner];
     vec2 offsetNdc = c * radius / vec2(pc.params.x, pc.params.y) * 2.0;
