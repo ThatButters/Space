@@ -55,10 +55,12 @@ private:
     void startLiveFetch();
     void pollLiveData();
     bool loadLiveClouds();
+    // Today's sunspots: the SDO/HMI disc reprojected onto the Sun's globe for the moment it was taken.
+    bool loadLiveSun();
     bool loadTle();
     void* m_liveProcess = nullptr;
     double m_liveNextPoll = 0.0;
-    std::filesystem::file_time_type m_cloudsStamp{}, m_tleStamp{};
+    std::filesystem::file_time_type m_cloudsStamp{}, m_tleStamp{}, m_sunStamp{};
 
     Input m_input;
     std::unique_ptr<Window> m_window;
@@ -83,6 +85,7 @@ private:
     double m_scrubHeld = 0.0;  // seconds Up / Down has been held at a stop
     double m_scrubRate = 0.0;  // simulated seconds per real second from scrubbing (0 = not scrubbing)
     std::string m_liveCloudDate; // the day today's cloud imagery was taken
+    std::string m_liveSunWhen;   // when today's Sun image was taken (UTC)
     void setIntroClock();       // dawn at the Cape, today
     bool m_atmospheres = true;  // --no-atmospheres renders every body airless
     // Near a world or beside a spacecraft the clock is held close to real time, so taking the controls

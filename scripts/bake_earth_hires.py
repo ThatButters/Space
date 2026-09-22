@@ -21,11 +21,24 @@ BMNG = "https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73751/world.top
 NIGHT = "https://eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/BlackMarble_2016_3km.jpg"
 
 
+def download(url, path):
+    """Stream url to path.part, then rename: a file under its final name is always complete, so an
+    interrupted multi-hundred-MB download is fetched again instead of being baked half-empty."""
+    tmp = path + ".part"
+    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+        while True:
+            chunk = r.read(8 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+    os.replace(tmp, path)
+
+
 def fetch(url, path):
-    if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
+    if os.path.exists(path):
         return
     print("downloading", url)
-    urllib.request.urlretrieve(url, path)
+    download(url, path)
 
 
 def main():

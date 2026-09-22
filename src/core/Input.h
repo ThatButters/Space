@@ -15,7 +15,8 @@ public:
     void onScroll(double dx, double dy);
 
     bool keyDown(int key) const { return m_keys[key]; }
-    bool keyPressed(int key) const { return m_keys[key] && !m_prevKeys[key]; }
+    // Latched in the key callback, so a tap that goes down and up within one slow frame still counts.
+    bool keyPressed(int key) const { return m_pressed[key]; }
     bool mouseDown(int button) const { return m_mouse[button]; }
     bool mousePressed(int button) const { return m_mouse[button] && !m_prevMouse[button]; }
     bool mouseReleased(int button) const { return !m_mouse[button] && m_prevMouse[button]; }
@@ -27,7 +28,7 @@ public:
     void resetMouseDelta() { m_haveLastMouse = false; m_mouseDelta = {}; }
 
 private:
-    std::array<bool, 512> m_keys{}, m_prevKeys{};
+    std::array<bool, 512> m_keys{}, m_prevKeys{}, m_pressed{};
     std::array<bool, 8> m_mouse{}, m_prevMouse{};
     glm::vec2 m_mouseDelta{};
     glm::dvec2 m_lastMouse{};

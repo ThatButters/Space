@@ -67,7 +67,7 @@ vec3 aurora(vec3 pLocal, vec3 sunLocal, float h, float time, float strength) {
     float activity = 0.3 + 0.7 * bass * react;                        // Kp stand-in
     float ovalColat = radians(15.0 + 8.0 * night + 5.0 * activity);
     float ovalWidth = radians(2.0 + 2.5 * night + 1.5 * activity);
-    float oval = exp(-pow((colat - ovalColat) / ovalWidth, 2.0));
+    float oval = gauss((colat - ovalColat) / ovalWidth);
     if (oval < 0.002) return vec3(0.0);
 
     float band = react > 0.0 ? frameSkyBand(pLocal) : 0.3;
@@ -80,9 +80,9 @@ vec3 aurora(vec3 pLocal, vec3 sunLocal, float h, float time, float strength) {
 
     // Vertical structure in planet radii: 100 km = 0.0157 R.
     float km = h * 6371.0;
-    float green = exp(-pow((km - 110.0) / 35.0, 2.0)) + 0.35 * exp(-pow((km - 150.0) / 60.0, 2.0));
+    float green = gauss((km - 110.0) / 35.0) + 0.35 * gauss((km - 150.0) / 60.0);
     float red = smoothstep(180.0, 260.0, km) * (1.0 - smoothstep(260.0, 330.0, km)) * 0.55;
-    float violet = exp(-pow((km - 95.0) / 20.0, 2.0)) * 0.35 * activity;
+    float violet = gauss((km - 95.0) / 20.0) * 0.35 * activity;
     vec3 c = vec3(0.25, 1.0, 0.35) * green + vec3(0.95, 0.22, 0.30) * red + vec3(0.55, 0.30, 1.0) * violet;
     float music = 0.6 + react * (1.6 * band + 1.2 * treble);
     return c * oval * shape * strength * music;
@@ -170,7 +170,7 @@ void main() {
             float night = lit < 0.5 ? 1.0 : 0.25;
             auroraLight += T * aurora(pl, sl, hKm / 6371.0, pc.params.x, pc.params.w) * dsR * night;
             // Airglow: the faint green oxygen layer near 90 km that rims the night limb in photos from orbit.
-            float glow = exp(-pow((hKm - 92.0) / 16.0, 2.0)) * (lit < 0.5 ? 1.0 : 0.15);
+            float glow = gauss((hKm - 92.0) / 16.0) * (lit < 0.5 ? 1.0 : 0.15);
             auroraLight += T * vec3(0.18, 0.55, 0.28) * glow * dsR * 0.005;
         }
         if (!groundHit) T *= stepT;

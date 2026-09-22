@@ -105,6 +105,7 @@ public:
     glm::dvec3 sunPosition() const { return m_bodies[0].position; }
     double julianDate() const { return m_jd; }
     // Direction of the vernal equinox (ICRS x axis) in engine coordinates: the reference for orbital elements.
+    const glm::dmat3& eclipticToEngine() const { return m_eclipticToEngine; } // J2000 ecliptic -> engine axes
     glm::dvec3 equinoxDirection() const { return glm::normalize(m_eclipticToEngine * glm::dvec3(1.0, 0.0, 0.0)); }
 
     // Body-local unit direction for a latitude / east longitude (degrees). Longitude 0 is local +x,

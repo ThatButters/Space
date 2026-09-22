@@ -31,13 +31,31 @@ double glide(double s) {
 
 void Tour::stop(const char* reason) {
     if (m_active) LOG_INFO("Tour stopped{}{}", reason[0] ? ": " : "", reason);
+    if (m_active && m_defaultFov > 0.f) m_lensRestore = true;
     m_active = false;
+}
+
+bool Tour::takeLensRestore(float& fovY) {
+    if (!m_lensRestore) return false;
+    m_lensRestore = false;
+    fovY = m_defaultFov;
+    return true;
+}
+
+// A fresh start forgets the last run's leg: otherwise a restart flies back to the stop that was left,
+// or sits held, or takes a stale clock jump.
+void Tour::resetLegState() {
+    m_stopChosen = m_skipped = m_clockJump = m_hold = m_introFromCut = m_introRestart = false;
+    m_lensRestore = false;
+    m_away = false;
+    m_defaultFov = 0.f; // re-read the camera's lens (the user may have changed it off the tour)
 }
 
 void Tour::start(const SolarSystem& solar, const Camera& camera, size_t firstStop) {
     if (m_stops.empty()) return;
     LOG_INFO("Tour started");
     (void)camera;
+    resetLegState();
     m_active = true;
     m_next = firstStop % m_stops.size();
     m_phase = Phase::FadeOut;
@@ -49,6 +67,7 @@ void Tour::startWithIntro(const SolarSystem& solar, int earth) {
     if (m_stops.empty() || earth < 0) return;
     LOG_INFO("Tour started (intro)");
     (void)solar;
+    resetLegState();
     m_active = true;
     m_next = 0;
     m_phase = Phase::Intro;
@@ -72,6 +91,9 @@ bool Tour::takeClockJump(double& jd) {
     if (!m_clockJump) return false;
     m_clockJump = false;
     jd = m_clockJumpJd;
+    m_away = m_pendingAway;
+    m_homeJd = m_pendingHomeJd;
+    m_awayJd = m_clockJumpJd;
     return true;
 }
 
@@ -159,6 +181,7 @@ void Tour::beginApproach(const SolarSystem& solar) {
         m_t = 0.0;
         m_introRestart = true;
         m_introFromCut = true;
+        m_away = false; // the opening sets its own clock
         return;
     }
     m_skipped = false;
@@ -170,20 +193,20 @@ void Tour::beginApproach(const SolarSystem& solar) {
     m_orbitAngle = 0.0;
     m_clockJump = false;
 
+    // The tour's own time: where the clock would be had no stop moved it.
+    const double home = m_away ? m_homeJd + (solar.julianDate() - m_awayJd) : solar.julianDate();
+    double want = home;
     if (m_targetCraft >= 0 && m_crafts) {
         const Craft& c = m_crafts->crafts()[m_targetCraft];
         if (c.placement == CraftPlacement::Orbit && !c.tle) {
             m_crafts->rephaseForDaylight(solar, m_targetCraft);
+        } else if (m_crafts->sunBehind(m_targetCraft)) {
+            // At its latest closest approach, when the shield eclipses a Sun eleven degrees across.
+            want = m_crafts->lastPerihelionJulianDate(m_targetCraft, home);
         } else if (!c.keepClock) {
             // Real orbits are left alone; instead the clock moves (in the black) to the next day-side pass.
-            const double now = solar.julianDate();
-            const double lit = m_crafts->daylightJulianDate(solar, m_targetCraft, now);
-            if (lit > now + 1e-6) {
-                m_clockJump = true; // applied while the picture is black
-                m_clockJumpJd = lit;
-            }
+            want = std::max(home, m_crafts->daylightJulianDate(solar, m_targetCraft, home));
         }
-        if (m_clockJump) return; // the app moves the clock next frame; the approach is laid out after that
     } else {
         // Arrive at the sunlit face, on the side nearest the Sun-ward hemisphere.
         const Body& tb = solar.body(m_target);
@@ -198,6 +221,17 @@ void Tour::beginApproach(const SolarSystem& solar) {
             }
         }
     }
+    const bool away = std::abs(want - home) > 1e-6;
+    if (std::abs(want - solar.julianDate()) > 1e-6) {
+        m_clockJump = true; // applied by the app while the picture is black (takeClockJump commits the trip)
+        m_clockJumpJd = want;
+        m_pendingAway = away;
+        m_pendingHomeJd = home;
+        return;             // the approach is laid out next frame, at the new time
+    }
+    m_away = away;
+    m_homeJd = home;
+    m_awayJd = want;
     layOutApproach(solar);
 }
 
@@ -223,7 +257,12 @@ void Tour::layOutApproach(const SolarSystem& solar) {
     m_legOrient = orient;
     m_legUp = up;
     m_phase = Phase::Approach;
-    m_fovWanted = m_targetCraft >= 0 && m_crafts && m_crafts->earthInSky(solar, m_targetCraft) ? glm::radians(90.f) : 0.f;
+    // Lenses: wide at a lunar site (Earth above the lander), long behind Parker (the eclipse fills the frame).
+    m_fovWanted = 0.f;
+    if (m_targetCraft >= 0 && m_crafts) {
+        if (m_crafts->earthInSky(solar, m_targetCraft)) m_fovWanted = glm::radians(90.f);
+        else if (m_crafts->sunBehind(m_targetCraft)) m_fovWanted = glm::radians(40.f);
+    }
     m_t = 0.0;
     LOG_INFO("Tour: cut to {}", m_targetCraft >= 0 && m_crafts ? m_crafts->crafts()[m_targetCraft].name
                                                                  : solar.body(m_target).name + (m_mode == 1 ? "'s rings" : ""));
@@ -293,7 +332,9 @@ void Tour::update(const SolarSystem& solar, Camera& camera, double dt, float spe
         glm::quat vpOrient;
         m_crafts->viewpoint(solar, m_targetCraft, m_crafts->viewDistanceSizes(m_targetCraft), vpPos, vpOrient);
         // About a third of a turn over the visit; barely any at a lunar site, so Earth stays in the frame.
-        const double ang = smooth(m_t / visitSeconds) * (m_crafts->earthInSky(solar, m_targetCraft) ? 0.12 : 0.6);
+        // None behind Parker: a degree of sweep would bring the Sun out from behind the shield.
+        const double sweep = m_crafts->sunBehind(m_targetCraft) ? 0.0 : m_crafts->earthInSky(solar, m_targetCraft) ? 0.12 : 0.6;
+        const double ang = smooth(m_t / visitSeconds) * sweep;
         const glm::dvec3 off = vpPos - craft.position;
         camera.position = craft.position + glm::dvec3(glm::angleAxis((float)ang, glm::vec3(m_legUp)) * glm::vec3(off));
         camera.speed = craft.sizeMeters / (kKmPerParsec * 1000.0) * 0.3;

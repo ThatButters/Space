@@ -63,6 +63,8 @@ public:
     // A landing site visited in the dark gets its clock moved to local morning, during the black of the
     // cut. Returns true once with the Julian date to jump to.
     bool takeClockJump(double& jd);
+    // Once after the tour stops: the camera's own lens to put back (a lunar site widens it).
+    bool takeLensRestore(float& fovY);
 
     std::string status() const;
 
@@ -105,6 +107,14 @@ private:
     float m_defaultFov = 0.f, m_fovWanted = 0.f;  // the camera's own lens; lunar landing sites get a wider one (Earth in the sky)
     bool m_clockJump = false;
     double m_clockJumpJd = 0.0;
+    bool m_lensRestore = false;
+    // A stop that moves the clock (a lunar morning, Parker at perihelion) is a trip away from the tour's own
+    // time: the next cut brings the clock home again, plus the time spent away.
+    bool m_away = false;
+    double m_homeJd = 0.0, m_awayJd = 0.0;
+    bool m_pendingAway = false; // the trip a requested clock jump starts (or ends), committed when it is taken
+    double m_pendingHomeJd = 0.0;
+    void resetLegState();
 };
 
 } // namespace space

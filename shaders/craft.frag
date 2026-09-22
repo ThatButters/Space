@@ -95,7 +95,9 @@ mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
     vec3 dp2perp = cross(dp2, N), dp1perp = cross(N, dp1);
     vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
     vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-    float invmax = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-60));
+    float m = max(dot(T, T), dot(B, B));
+    if (m < 1e-30) return mat3(vec3(0.0), vec3(0.0), N); // degenerate UVs: no tangent frame, keep N
+    float invmax = inversesqrt(m);
     return mat3(T * invmax, B * invmax, N);
 }
 
@@ -116,8 +118,8 @@ void main() {
         vec3 tn = texture(uTex[nonuniformEXT(pc.ids.z)], vUv).xyz * 2.0 - 1.0;
         tn.xy *= pc.material.z;
         mat3 TBN = cotangentFrame(Ng, vWorldPos * pc.shadowInfo.w, vUv);
-        vec3 mapped = normalize(TBN * tn);
-        if (all(equal(mapped, mapped))) N = mapped; // guard degenerate UVs
+        vec3 mapped = TBN * tn;
+        if (dot(mapped, mapped) > 1e-12) N = normalize(mapped);
     }
 
     float metallic = pc.material.x, rough = pc.material.y;

@@ -77,10 +77,36 @@ vec4 sampleDay(Body b, vec2 uv) {
 vec3 rotateInv(vec4 q, vec3 v) { vec4 c = vec4(-q.xyz, q.w); return v + 2.0 * cross(c.xyz, cross(c.xyz, v) + c.w * v); }
 vec3 rotateVec(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
 
-vec3 sunSurface(vec3 p, float seed, float time) {
-    float g1 = fbm(p * 18.0 + seed + time * 0.02, 4);
-    float g2 = fbm(p * 60.0 - seed + time * 0.05, 3);
-    return vec3(1.0, 0.85, 0.6) * (0.75 + 0.35 * g1 + 0.15 * g2);
+// Distance to the nearest cell point (F1) and the gap to the second nearest (F2 - F1: small in the lanes).
+float solarCells(vec3 q, out float edge) {
+    vec3 i = floor(q), f = fract(q);
+    float d1 = 8.0, d2 = 8.0;
+    for (int z = -1; z <= 1; ++z)
+        for (int y = -1; y <= 1; ++y)
+            for (int x = -1; x <= 1; ++x) {
+                vec3 g = vec3(x, y, z);
+                vec3 c = i + g;
+                vec3 h = hash33(c); // integer hash: sin() of arguments this large loses accuracy on GPUs
+                vec3 r = g + h - f;
+                float d = dot(r, r);
+                if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) d2 = d;
+            }
+    edge = sqrt(d2) - sqrt(d1);
+    return sqrt(d1);
+}
+
+// The photosphere's brightness pattern (colour comes from the body): granulation, convection cells about
+// 1,500 km across (~460 per solar radius) with dark lanes between, over faint supergranulation. Each scale
+// fades out once its cells shrink below a few pixels, so the distant disc stays clean instead of shimmering.
+vec3 sunSurface(vec3 p, float seed, float time, float fwP) {
+    float pxPerUnit = 1.0 / max(fwP, 1e-9);
+    float edge;
+    float d1 = solarCells(p * 460.0 + seed + vec3(time * 0.0004), edge);
+    float cell = 0.8 + 0.34 * (1.0 - clamp(d1, 0.0, 1.0)) * smoothstep(0.0, 0.14, edge);
+    float gran = mix(1.0, cell, smoothstep(1.5, 5.0, pxPerUnit / 460.0));
+    float mottle = mix(1.0, 0.9 + 0.2 * fbm(p * 140.0 + seed, 2), smoothstep(1.5, 5.0, pxPerUnit / 140.0));
+    float superG = 0.95 + 0.05 * fbm(p * 23.0 + seed, 3);
+    return vec3(gran * mottle * superG);
 }
 
 vec3 rockySurface(vec3 p, vec3 base, float seed) {
@@ -457,6 +483,8 @@ void main() {
     vec2 puv = pc.patchAnchor.xy + vec2(dot(patchOffM, pc.patchEast.xyz) * pc.patchAnchor.z,
                                         dot(patchOffM, pc.patchNorth.xyz) * pc.patchAnchor.w);
     vec2 pdx = dFdx(puv), pdy = dFdy(puv);
+    // The Sun's pixel footprint (granulation fade), taken while the quad is whole.
+    float fwP = length(fwidth(p));
     float patchW = 0.0;
     if (b.patchParams.w > 0.5 && int(pc.anchorWorld.w) == vBody) {
         vec2 edge = min(puv, 1.0 - puv);
@@ -507,12 +535,28 @@ void main() {
     vec3 L = toSun * inversesqrt(sunDist2);
 
     if (type == SUN) {
-        // Limb darkening + granulation; radiance carried by pc.params.y so bloom gets real energy.
+        // Limb darkening, a quadratic fit per channel (after Neckel & Labs): toward the edge the disc falls
+        // to about a third in red and an eighth in blue, dimmer and warmer than the centre.
         float mu = max(dot(N, V), 0.0);
-        float limb = 0.45 + 0.55 * pow(mu, 0.6);
-        vec3 surf = hasDay ? sampleDay(b, uv).rgb * (0.8 + 0.4 * fbm(p * 40.0 + time * 0.03, 3))
-                           : sunSurface(p, seed, time);
-        outColor = vec4(b.color.rgb * surf * limb * pc.params.y / (vBoost * vBoost), 1.0);
+        float om = 1.0 - mu;
+        vec3 limb = max(vec3(1.0) - vec3(0.50, 0.62, 0.76) * om - vec3(0.22, 0.18, 0.12) * om * om, vec3(0.0));
+        vec3 surf = sunSurface(p, seed, time, fwP);
+        // Today's sunspots and faculae (SDO/HMI, reprojected onto the globe by the app): brightness
+        // relative to the quiet photosphere, stored as ratio * 200 / 255. No map: an unblemished disc.
+        if (hasDay) surf *= sampleDay(b, uv).r * (255.0 / 200.0);
+        // A resolved disc is shown at a radiance the tonemapper can hold, so granulation and limb read
+        // instead of a white hole (the glare pass supplies the dazzle). A distant Sun, a few pixels across,
+        // keeps its full energy so it still outshines every star.
+        // How resolved is judged against the frame height, not pixels: under DLSS the render target is a
+        // fraction of the display, and a pixel test took a large disc for a small one (a white hole).
+        // Row 1 of viewProj is the view's up axis scaled by the projection's 1 / tan(fov / 2).
+        float invTanHalf = length(vec3(pc.viewProj[0][1], pc.viewProj[1][1], pc.viewProj[2][1]));
+        float angR = asin(clamp(b.posRadius.w / max(length(b.posRadius.xyz), 1e-30), 0.0, 1.0));
+        float halfHeights = angR * invTanHalf; // disc radius as a fraction of half the frame height
+        // Full energy below ~1.3% (a few pixels), the displayable 1.6 from ~18%, blended in log space.
+        // 1.6 sits mid-curve, so the limb falls off visibly and the spots read.
+        float radiance = exp(mix(log(max(pc.params.y, 1e-3)), log(1.6), smoothstep(0.013, 0.18, halfHeights)));
+        outColor = vec4(b.color.rgb * surf * limb * radiance / (vBoost * vBoost), 1.0);
         return;
     }
 

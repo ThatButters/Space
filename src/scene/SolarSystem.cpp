@@ -172,7 +172,8 @@ SolarSystem::SolarSystem() {
         b.texNight = night;
         b.texClouds = clouds;
     };
-    tex("Sun", "8k_sun.jpg");
+    // The Sun has no static map (the painted one read as blotches): its spots come live from SDO/HMI
+    // (App::loadLiveSun), and without them the disc is clean photosphere.
     tex("Mercury", "8k_mercury.jpg");
     // Venus: the cloud deck is the day map until the Magellan surface is baked; then it becomes the opaque
     // cloud layer over the radar map (only seen from beneath the clouds).

@@ -4,13 +4,16 @@ namespace space {
 
 void Input::beginFrame() {
     m_prevKeys = m_keys;
+    m_pressed = {};
     m_prevMouse = m_mouse;
     m_mouseDelta = {};
     m_scroll = 0.f;
 }
 
 void Input::onKey(int key, bool down) {
-    if (key >= 0 && key < (int)m_keys.size()) m_keys[key] = down;
+    if (key < 0 || key >= (int)m_keys.size()) return;
+    if (down && !m_keys[key]) m_pressed[key] = true;
+    m_keys[key] = down;
 }
 
 void Input::onMouseButton(int button, bool down) {

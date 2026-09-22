@@ -6,10 +6,11 @@
 
 Space is a photoreal solar-system explorer that runs on your own GPU. It puts the planets, moons and
 spacecraft where they really are **right now** — today's cloud cover pulled from NASA satellites, the
-ISS on this morning's orbital elements, tonight's lunar phase — and takes you on a cinematic tour of
-the places people and their machines have been: a Saturn V two minutes into the Apollo 11 launch, the
-station at 427 km, the descent stages still standing at Tranquility Base and Hadley Rille,
-Perseverance on the floor of Jezero, Huygens on Titan, Voyager on its way out.
+ISS on this morning's orbital elements, today's sunspots from NASA's Solar Dynamics Observatory,
+tonight's lunar phase — and takes you on a cinematic tour of the places people and their machines have
+been: a Saturn V two minutes into the Apollo 11 launch, the station at 427 km, the descent stage still
+standing at Tranquility Base, Perseverance on the floor of Jezero, Parker Solar Probe at its closest
+pass of the Sun, Voyager on its way out.
 
 Everything is drawn from real data — Gaia stars, LRO and HiRISE terrain, USGS mosaics, NASA's own
 spacecraft models — through a custom Vulkan 1.3 engine written for this project. No game engine, no
@@ -34,26 +35,35 @@ middleware beyond the NVIDIA DLSS SDK.
 
 - **Tonight's sky.** Planets and moons from JPL elements and Meeus' lunar theory for the current
   date; 2.5 million Gaia DR3 stars with real distances and colours; the 88 IAU constellations.
-- **Live data at launch.** Today's cloud cover from NASA GIBS (MODIS/VIIRS) is fetched and blended
-  into Earth's cloud layer; the ISS and Hubble fly on this morning's CelesTrak elements with J2
-  node regression. Both refresh in the background and hot-swap in without a restart.
+- **Live data at launch.** Today's cloud cover from NASA GIBS (VIIRS on Suomi NPP) is fetched and
+  blended into Earth's cloud layer; the ISS and Hubble fly on this morning's CelesTrak elements with J2
+  node regression; the Sun wears the latest SDO/HMI continuum image, reprojected onto its globe for
+  the moment it was taken so today's sunspots turn with it. All of it refreshes in the background and
+  hot-swaps in without a restart.
 - **The tour.** A cinematic autopilot built to be comfortable — and VR-safe — by rule: the camera
   never rotates on its own, every leg is a cut (fade to black, reappear aimed at the next stop),
   approaches are straight lines at constant speed, roll is locked. Left/right arrows skip stops,
-  right-mouse looks around, `T` leaves the tour. Historic stops carry their date.
+  Space holds one, Up/Down scrub its clock, right-mouse looks around, `T` leaves the tour. Historic
+  stops carry their date; a stop that needs another moment (morning at a landing site, Parker at
+  perihelion with its shield eclipsing the Sun) moves the clock in the black of the cut and the next
+  cut brings it home.
 - **Landing sites at 50 cm.** LRO NAC orthophotos and elevation models around all six Apollo sites,
   HiRISE around Perseverance. Because the photo's shading holds every boulder and crater the DTM
   cannot resolve, the bake recovers that relief photoclinometrically (the brightness residual along
   the Sun line is the ground's tilt) and relights it under tonight's Sun, with parallax occlusion,
   self-shadowing, an opposition surge, and centimetre regolith grain within a few metres.
 - **Spacecraft.** NASA's public models — the 2.7 M-triangle ISS, Hubble, JWST, LRO, MRO, Juno,
-  Parker, Voyager, Huygens, the LM descent stages with their flags — shaded with metallic-roughness
+  Parker (on its real orbit, from JPL Horizons elements), Voyager, Huygens, the LM descent stages with
+  their flags — shaded with metallic-roughness
   PBR, casting sun-aligned shadows on the ground and on themselves. The Saturn V launch carries a
   ray-marched engine plume and a sunlit exhaust trail.
-- **Atmospheres and light.** Single-scattering Rayleigh/Mie shells you can fly into (a Mars sky from
-  the surface, Titan's haze), airglow, eclipses and transits by other bodies, ring shadows on Saturn,
-  cloud shadows on the ground, night-side city lights and lightning, physically based bloom, Sun
-  glare, motion blur, TAA or DLSS, scRGB HDR output.
+- **Atmospheres and light.** Physically based atmospheres (Hillaire 2020: transmittance and
+  multiple-scattering LUTs per atmosphere class) you can fly into, with aerial perspective on ground
+  and clouds (a Mars sky from the surface, Titan's haze), airglow, eclipses and transits by other
+  bodies, ring shadows on Saturn, cloud shadows on the ground, night-side city lights and lightning.
+  The Sun has limb darkening, granulation up close, a K corona and prominences that show once the
+  disc is covered, and lens ghosts; then physically based bloom, auto-exposure, motion blur, TAA or
+  DLSS, scRGB HDR output.
 - **Music.** Whatever is playing on the default output device is captured (WASAPI loopback) and
   analysed into 32 bands that breathe through the nebulae and dust — slow and continuous, never per
   beat.
@@ -62,7 +72,7 @@ middleware beyond the NVIDIA DLSS SDK.
 
 | Layer | Choice | Notes |
 |---|---|---|
-| Language | C++20 | ~9,000 lines of engine, ~2,600 of GLSL, ~2,000 of Python tooling |
+| Language | C++20 | ~11,000 lines of engine, ~3,300 of GLSL, ~2,000 of Python tooling |
 | Graphics API | Vulkan 1.3 | dynamic rendering, synchronization2, bindless texture array (1024), push-constant heavy, no render passes |
 | Memory | VulkanMemoryAllocator | |
 | Upscaling / AA | NVIDIA DLSS Super Resolution (NGX SDK, Vulkan) | motion vectors from depth; falls back to the engine's own TAA |
@@ -81,11 +91,13 @@ middleware beyond the NVIDIA DLSS SDK.
 ### Rendering path, per frame
 
 ```
+atmosphere LUTs (compute, at startup)
 shadow map (crafts)  ->  HDR scene at DLSS internal size:
                          sky -> galactic medium + nebulae -> bodies (ray-traced spheres, rings,
-                         atmospheres) -> stars -> spacecraft -> plume -> dust
+                         atmospheres) -> spacecraft -> plume -> dust
                      ->  motion vectors (compute)  ->  DLSS reconstruction to display size
-                     ->  post (TAA when DLSS is off, Sun glare, motion blur)  ->  bloom chain
+                     ->  post (TAA when DLSS is off, Sun glare, corona, lens ghosts, motion blur)
+                     ->  stars at display resolution  ->  exposure metering  ->  bloom chain
                      ->  tonemap to the swapchain  ->  ImGui overlay
 ```
 
@@ -96,13 +108,14 @@ shadow map (crafts)  ->  HDR scene at DLSS internal size:
 | Stars | [AT-HYG v3.2](https://github.com/astronexus/ATHYG-Database) (Gaia DR3, Hipparcos, Tycho-2) | CC BY-SA 4.0 |
 | Constellations | Stellarium modern sky culture | CC BY-SA 4.0 |
 | Earth | NASA Blue Marble Next Generation (500 m, bathymetry), Black Marble 2016 | public domain |
-| Today's clouds | NASA GIBS, MODIS Terra corrected reflectance | public domain |
-| Orbits | JPL approximate planetary elements; Meeus lunar theory; [CelesTrak](https://celestrak.org) TLEs | public domain |
+| Today's clouds | NASA GIBS, VIIRS (Suomi NPP) corrected reflectance | public domain |
+| Today's Sun | NASA SDO/HMI flattened continuum intensitygram | public domain |
+| Orbits | JPL approximate planetary elements; Meeus lunar theory; [CelesTrak](https://celestrak.org) TLEs; JPL Horizons (Parker) | public domain |
 | Moon | NASA CGI Moon Kit (LROC WAC colour, LOLA elevation) | public domain |
 | Apollo sites | LROC NAC DTMs and 50 cm orthophotos (PDS) | public domain |
 | Jezero | HiRISE DTM ESP_045994_1985 / ESP_046060_1985 and 25 cm orthoimage (UA / PDS) | public domain |
 | Planets and moons | USGS Astrogeology mosaics: Mars (Viking, MOLA), Mercury (MESSENGER), Venus (Magellan SAR), the Galilean moons, Titan, Rhea, Triton, Phobos, Deimos | public domain |
-| 8K fallback maps | Solar System Scope | CC BY 4.0 |
+| 8K fallback maps | Solar System Scope (not the Sun: its painted map is not used) | CC BY 4.0 |
 | Spacecraft | NASA 3D Resources, NASA Eyes on the Solar System | public domain |
 | DLSS | NVIDIA DLSS SDK | NVIDIA licence, drop-in only |
 
@@ -112,7 +125,7 @@ Nothing above is in the repository (multi-GB); the scripts fetch and bake it.
 
 - Windows 11, Visual Studio 2022 Build Tools (MSVC, CMake, Ninja)
 - [Vulkan SDK](https://vulkan.lunarg.com/) 1.4+ (`winget install KhronosGroup.VulkanSDK`)
-- [vcpkg](https://github.com/microsoft/vcpkg) at `..\vcpkg` or pointed to by `VCPKG_ROOT`
+- [vcpkg](https://github.com/microsoft/vcpkg) pointed to by `VCPKG_ROOT` (`scripts\build.cmd` also finds it at `..\vcpkg`)
 - Python 3.11+ with `numpy scipy pillow opencv-python-headless requests` for the data scripts
 - An RTX GPU for DLSS (optional); developed on an RTX 5070 Ti at 3440x1440
 
@@ -144,7 +157,8 @@ python scripts\bake_planets_hires.py    USGS mosaics for Mars, Mercury, Venus, t
 python scripts\bake_apollo_sites.py     LRO NAC + HiRISE landing-site patches (10-15 GB of sources)
 ```
 
-`scripts\fetch_today.py` (clouds and orbital elements) runs by itself at launch when its data is stale.
+`scripts\fetch_today.py` (clouds, orbital elements and the Sun) runs by itself at launch for whatever is
+stale (orbits after 12 hours, the Sun after 6, clouds after 20); `--only clouds,tle,sun` picks parts by hand.
 
 For DLSS, copy the [NVIDIA DLSS SDK](https://github.com/NVIDIA/DLSS) into `external\dlss` as described
 in `external\dlss\README.md` and rebuild.
@@ -155,12 +169,14 @@ in `external\dlss\README.md` and rebuild.
 |---|---|
 | Right mouse (hold) | Look around (on the tour the view eases back when released) |
 | Left / Right arrow | Previous / next tour stop |
+| Space | Hold the tour at this stop, or carry on (starts the tour during the opening) |
+| Up / Down (hold) | Scrub the clock at a stop: a minute a second, then an hour a second |
 | T | Leave / rejoin the tour (the only key that stops it) |
-| W A S D, R / F | Fly; up / down |
+| W A S D, R or Space / F or Ctrl | Fly; up / down (off the tour) |
 | Q / E | Roll |
 | Scroll, Shift | Speed (exponential), 5x boost |
 | 0-9 | Go to Sun, Mercury, Venus, Earth, Moon, Mars, Jupiter, Saturn, Uranus, Neptune (off the tour) |
-| F1 | Settings panel: DLSS, exposure, HDR, time scale, music, constellations |
+| F1 | Settings panel: DLSS, exposure and auto-exposure, HDR, time scale, tour pace, music, constellations |
 | Esc | Quit |
 
 ## Command-line switches
@@ -172,6 +188,7 @@ in `external\dlss\README.md` and rebuild.
 --surface <Body> <lat> <lon> <altKm>   start above a surface point
 --no-tour / --tour-start <n> / --tour-pace <x>
 --no-dlss / --dlss <0-4>  DLSS off, or performance .. DLAA
+--no-auto-exposure / --no-atmospheres
 --sdr                     SDR swapchain even on an HDR display
 --time-scale <days/s>     simulated days per real second (default 0.02)
 --no-stars --no-bodies --no-volumetrics --no-sky --no-bloom
@@ -197,9 +214,9 @@ docs/        PLAN.md (the build plan), ROADMAP.md, screenshots
 ## Status and roadmap
 
 Everything in the gallery runs today at 3440x1440 on a single RTX 5070 Ti. Next up, in
-`docs/ROADMAP.md`: VR (OpenXR — the tour was designed for it), DLSS Frame Generation and Reflex,
-ray-traced planet shadows, precomputed multiple-scattering atmospheres, exact JPL ephemerides, and
-tour paths through the nebulae.
+`docs/PLAN.md` and `docs/ROADMAP.md`: finished clouds (cirrus, night lighting), displaced terrain
+at the landing sites, ray-traced shadows and reflections, a narrated tour, and VR (OpenXR — the tour
+was designed for it).
 
 ## Credits
 

@@ -29,11 +29,24 @@ BASE = "https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/"
 MOON_RADIUS_M = 1737400.0
 
 
+def download(url, path):
+    """Stream url to path.part, then rename: a file under its final name is always complete, so an
+    interrupted multi-hundred-MB download is fetched again instead of being baked half-empty."""
+    tmp = path + ".part"
+    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+        while True:
+            chunk = r.read(8 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+    os.replace(tmp, path)
+
+
 def fetch(name):
     path = os.path.join(OUT, name)
-    if not (os.path.exists(path) and os.path.getsize(path) > 1_000_000):
+    if not os.path.exists(path):
         print("downloading", name)
-        urllib.request.urlretrieve(BASE + name, path)
+        download(BASE + name, path)
     return path
 
 

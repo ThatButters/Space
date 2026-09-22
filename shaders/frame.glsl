@@ -45,7 +45,8 @@
         float r = speed * t * (1.0 + 0.5 * t); /* a slow tide, not a flash */ \
         float w = width * (1.0 + 0.08 * r / max(width, 1e-6)); \
         float fade = frame.mood.w * exp(-t * 0.35); \
-        return exp(-pow((d - r) / w, 2.0)) * fade; \
+        float u = (d - r) / w; /* squared by hand: pow of a negative base is NaN */ \
+        return exp(-u * u) * fade; \
     } \
     /* Expanding ring from the view centre after each beat: 1 on the wavefront, 0 elsewhere. */ \
     float frameBeatRing(vec3 dir) { \
@@ -53,7 +54,8 @@
         float r = frame.misc.x * 1.4; \
         float w = 0.10 + 0.05 * r; \
         float fade = exp(-frame.misc.x * 1.1); \
-        return exp(-pow((a - r) / w, 2.0)) * fade; \
+        float u = (a - r) / w; \
+        return exp(-u * u) * fade; \
     }
 
 #endif

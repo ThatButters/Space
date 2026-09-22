@@ -32,7 +32,7 @@ void main() {
         hdr = texture(uHdr, vUV).rgb;
         bloom = texture(uBloom, vUV).rgb;
     }
-    vec3 color = (hdr + bloom * pc.params.y) * pc.params.x;
+    vec3 color = min((hdr + bloom * pc.params.y) * pc.params.x, vec3(6e4)); // Inf / Inf in the curve is NaN
 
     if (pc.params.z > 0.5) {
         // Scene value 1.0 maps to paper white; highlights roll off smoothly toward the peak so the

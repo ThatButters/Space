@@ -51,6 +51,8 @@ struct Craft {
     double raDeg = 0.0, decDeg = 0.0, distanceAuAtEpoch = 100.0, epochJd = 2460676.5, auPerYear = 3.0;
     // Heliocentric ellipse (ecliptic): a (AU), e, inclination, period days, phase
     double aAu = 0.4, ecc = 0.8, periodDays = 88.0;
+    // Heliocentric ellipse orientation (J2000 ecliptic) and time of perihelion (JD).
+    double nodeDeg = 0.0, periDeg = 0.0, perihelionJd = 2451545.0;
 
     std::string blurb; // one line for the UI
     std::string when;  // for things that are not there any more: the date shown in the caption
@@ -86,6 +88,10 @@ public:
     glm::dvec3 viewAim(const SolarSystem& solar, int index, const glm::dvec3& cameraPos, float fovY) const;
     // A lander on the Moon: framed low, from the side away from Earth, so Earth is in the shot.
     bool earthInSky(const SolarSystem& solar, int index) const;
+    // A Sun-facing probe (Parker): framed from behind with the Sun grazing its heat shield, corona around it.
+    bool sunBehind(int index) const { return m_crafts[index].placement == CraftPlacement::HeliocentricEllipse; }
+    // The most recent perihelion at or before jd (a Sun-facing probe is visited at its closest approach).
+    double lastPerihelionJulianDate(int index, double jd) const;
     // Orbital frame of an orbiter: along-track (velocity), radial up, from the current placement.
     void orbitFrame(const SolarSystem& solar, int index, glm::dvec3& alongTrack, glm::dvec3& up) const;
     // "Up" for a camera near this craft: away from the parent for landers and orbiters, model up otherwise.

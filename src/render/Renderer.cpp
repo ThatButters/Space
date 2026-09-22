@@ -191,9 +191,9 @@ void Renderer::init(gfx::Context& ctx, Window& window) {
         ssi.addressModeU = ssi.addressModeV = ssi.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         VK_CHECK(vkCreateSampler(dev, &ssi, nullptr, &m_shadowSampler));
     }
-    if (ctx.properties().limits.maxPushConstantsSize < sizeof(CraftPushConstants))
+    if (ctx.properties().limits.maxPushConstantsSize < sizeof(BodyPushConstants))
         LOG_ERROR("Push constant budget {} < {} bytes: spacecraft and planet passes will fail",
-                  ctx.properties().limits.maxPushConstantsSize, sizeof(CraftPushConstants));
+                  ctx.properties().limits.maxPushConstantsSize, sizeof(BodyPushConstants));
 
     // Bindless-style texture array (partially bound, update-after-bind so textures can stream in).
     {
@@ -478,6 +478,7 @@ void Renderer::updateAutoExposure(const Frame& frame, const RenderSettings& sett
         // Space photography is exposed for the lit subject, not the black around it: only cells with
         // real light count, weighted toward the centre of the frame. With too little lit area (a star
         // field, a thin crescent) the exposure rests at 1, where everything was calibrated.
+        vmaInvalidateAllocation(m_ctx->allocator(), frame.lumBuffer.allocation, 0, VK_WHOLE_SIZE); // may be cached
         const float* cells = static_cast<const float*>(frame.lumMapped);
         constexpr int W = 64, H = 40;
         constexpr int BINS = 64;
@@ -1569,7 +1570,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             bpc.shadowMat = scene.shadowMatrix;
             bpc.shadowInfo = shadowInfo;
             bpc.anchorWorld = glm::vec4(scene.detailAnchorWorld, (float)scene.detailBody);
-            bpc.anchorLocal = glm::vec4(scene.detailAnchorLocal, (float)scene.sphereCount);
+            bpc.anchorLocal = glm::vec4(scene.detailAnchorLocal, (float)std::min(scene.sphereCount, totalBodies));
             bpc.patchAnchor = scene.patchAnchor;
             bpc.patchEast = scene.patchEast;
             bpc.patchNorth = scene.patchNorth;
@@ -1746,7 +1747,8 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     gfx::transitionImage(cmd, m_depth.image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, // stars test it
                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
     if (m_dlssActive) {
         // ---- DLSS: motion vectors from depth, then reconstruction to display size ----------------
@@ -1800,8 +1802,9 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
         PostPushConstants ppc{};
         ppc.prevViewProj = m_historyValid ? m_prevViewProj : viewProjClean;
         ppc.viewProj = viewProjClean;
-        ppc.camRight = glm::vec4(r, 0.f);
-        ppc.camUp = glm::vec4(u, 0.f);
+        // w: the depth buffer's jitter as a uv offset (the Sun's visibility taps read the jittered depth).
+        ppc.camRight = glm::vec4(r, jitterNdc.x * 0.5f);
+        ppc.camUp = glm::vec4(u, jitterNdc.y * 0.5f);
         ppc.camForward = glm::vec4(f, 0.f);
         // With DLSS the input is already resolved and unjittered: no history blend, no jitter offset.
         ppc.params = glm::vec4(tanHalf, aspect, kNearPlane, settings.taa && !m_dlssActive && m_historyValid ? 0.85f : 0.f);
@@ -1869,6 +1872,15 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_lumPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_lumLayout, 0, 1, &lf.lumSet, 0, nullptr);
         vkCmdDispatch(cmd, 8, 5, 1);
+        VkMemoryBarrier2 toHost{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        toHost.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        toHost.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        toHost.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        toHost.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &toHost;
+        vkCmdPipelineBarrier2(cmd, &dep);
         lf.lumWritten = true;
     }
 
@@ -1918,7 +1930,7 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             const VkDeviceSize hdrBytes = (VkDeviceSize)m_hdr.extent.width * m_hdr.extent.height * 8;
             const VkDeviceSize bloomBytes =
                 (VkDeviceSize)m_bloomMips[0].image.extent.width * m_bloomMips[0].image.extent.height * 8;
-            recordSwapchainCopy(cmd, m_swapchain.image(imageIndex), hdrBytes + bloomBytes);
+            if (!m_swapchain.isHdr()) recordSwapchainCopy(cmd, m_swapchain.image(imageIndex), hdrBytes + bloomBytes);
             color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             vkCmdBeginRendering(cmd, &ri);
             vkCmdSetViewport(cmd, 0, 1, &outViewport);
@@ -1933,7 +1945,8 @@ void Renderer::recordFrame(VkCommandBuffer cmd, uint32_t imageIndex, const Camer
             const VkDeviceSize bloomBytes =
                 (VkDeviceSize)m_bloomMips[0].image.extent.width * m_bloomMips[0].image.extent.height * 8;
             const VkDeviceSize swapBytes = (VkDeviceSize)ext.width * ext.height * 4;
-            recordSwapchainCopy(cmd, m_swapchain.image(imageIndex), hdrBytes + bloomBytes + swapBytes);
+            if (!m_swapchain.isHdr())
+                recordSwapchainCopy(cmd, m_swapchain.image(imageIndex), hdrBytes + bloomBytes + swapBytes);
             if (m_volumeBuffer.buffer) {
                 VkBufferCopy copy{0, hdrBytes + bloomBytes + swapBytes * 2, m_volumeBlob.size()};
                 vkCmdCopyBuffer(cmd, m_volumeBuffer.buffer, m_diagBuffer.buffer, 1, &copy);
@@ -2048,14 +2061,14 @@ void Renderer::reportDiagnostic() {
     const uint32_t sw = m_swapchain.extent().width, sh = m_swapchain.extent().height;
     const uint8_t* swapA = reinterpret_cast<const uint8_t*>(data) + hdrPixels * 8 + bloomPixels * 8;
     const uint8_t* swapB = swapA + (size_t)sw * sh * 4;
-    auto writePpm = [&](const std::string& name, auto pixel) {
+    auto writePpm = [&](const std::string& name, uint32_t pw, uint32_t ph, auto pixel) {
         std::filesystem::path path = gfx::shaderDirectory().parent_path() / name;
         FILE* f = std::fopen(path.string().c_str(), "wb");
         if (!f) return;
-        std::fprintf(f, "P6\n%u %u\n255\n", sw, sh);
-        std::vector<uint8_t> row(sw * 3);
-        for (uint32_t y = 0; y < sh; ++y) {
-            for (uint32_t x = 0; x < sw; ++x) pixel(x, y, &row[x * 3]);
+        std::fprintf(f, "P6\n%u %u\n255\n", pw, ph);
+        std::vector<uint8_t> row(pw * 3);
+        for (uint32_t y = 0; y < ph; ++y) {
+            for (uint32_t x = 0; x < pw; ++x) pixel(x, y, &row[x * 3]);
             std::fwrite(row.data(), 1, row.size(), f);
         }
         std::fclose(f);
@@ -2080,16 +2093,19 @@ void Renderer::reportDiagnostic() {
     }
 
     const std::string tag = std::to_string(m_diagSerial++);
-    writePpm("diag_" + tag + "_swap_tonemap.ppm", [&](uint32_t x, uint32_t y, uint8_t* out) {
-        const uint8_t* p = swapA + ((size_t)y * sw + x) * 4; // BGRA
-        out[0] = p[2]; out[1] = p[1]; out[2] = p[0];
-    });
-    writePpm("diag_" + tag + "_swap_final.ppm", [&](uint32_t x, uint32_t y, uint8_t* out) {
-        const uint8_t* p = swapB + ((size_t)y * sw + x) * 4;
-        out[0] = p[2]; out[1] = p[1]; out[2] = p[0];
-    });
-    writePpm("diag_" + tag + "_hdr.ppm", [&](uint32_t x, uint32_t y, uint8_t* out) {
-        const uint16_t* p = data + ((size_t)y * sw + x) * 4;
+    if (!m_swapchain.isHdr()) { // (not captured from an scRGB swapchain)
+        writePpm("diag_" + tag + "_swap_tonemap.ppm", sw, sh, [&](uint32_t x, uint32_t y, uint8_t* out) {
+            const uint8_t* p = swapA + ((size_t)y * sw + x) * 4; // BGRA
+            out[0] = p[2]; out[1] = p[1]; out[2] = p[0];
+        });
+        writePpm("diag_" + tag + "_swap_final.ppm", sw, sh, [&](uint32_t x, uint32_t y, uint8_t* out) {
+            const uint8_t* p = swapB + ((size_t)y * sw + x) * 4;
+            out[0] = p[2]; out[1] = p[1]; out[2] = p[0];
+        });
+    }
+    const uint32_t hw = m_hdr.extent.width, hh = m_hdr.extent.height; // render size (smaller under DLSS)
+    writePpm("diag_" + tag + "_hdr.ppm", hw, hh, [&](uint32_t x, uint32_t y, uint8_t* out) {
+        const uint16_t* p = data + ((size_t)y * hw + x) * 4;
         for (int c = 0; c < 3; ++c) {
             float v = halfToFloat(p[c]);
             v = std::clamp((v * (2.51f * v + 0.03f)) / (v * (2.43f * v + 0.59f) + 0.14f), 0.f, 1.f);
@@ -2122,7 +2138,7 @@ void Renderer::recordBloom(VkCommandBuffer cmd, const RenderSettings& settings) 
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bloomDownPipeline);
     for (uint32_t i = 0; i < n; ++i) {
-        VkExtent2D src = i == 0 ? m_hdr.extent : m_bloomMips[i - 1].image.extent;
+        VkExtent2D src = i == 0 ? m_post.extent : m_bloomMips[i - 1].image.extent; // mip 0 reads m_post
         BloomPushConstants pc{{1.f / src.width, 1.f / src.height, settings.bloomKnee, i == 0 ? 1.f : 0.f}};
         vkCmdPushConstants(cmd, m_bloomLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bloomLayout, 0, 1, &m_bloomMips[i].downSet,

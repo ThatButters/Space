@@ -229,19 +229,29 @@ void CraftCatalog::build(const SolarSystem& solar) {
         Craft c;
         c.name = "Parker Solar Probe";
         c.model = "parker.glb";
-        c.sizeMeters = 3.f;
+        c.sizeMeters = 3.f; // the fallback model's size; the Eyes model is set to its real 10.2 m below
         c.placement = CraftPlacement::HeliocentricEllipse;
         c.parent = 0;
-        c.aAu = 0.388;
-        c.ecc = 0.88;
-        c.periodDays = 88.0;
-        c.inclinationDeg = 3.4;
+        // Osculating elements from JPL Horizons (target -96, heliocentric, ecliptic J2000) for 22 Sep 2026;
+        // the orbit has been fixed since the last Venus flyby, so they hold for years.
+        c.aAu = 0.38843;
+        c.ecc = 0.88203;
+        c.periodDays = 88.425;
+        c.inclinationDeg = 3.3911;
+        c.nodeDeg = 76.483;
+        c.periDeg = 68.639;
+        c.perihelionJd = 2461288.1071; // 5 Sep 2026
         c.blurb = "Closest approach to the Sun: 6.1 million km";
         m_crafts.push_back(c);
     }
     for (Craft& c : m_crafts) {
         if (c.name == "SOHO") { c.modelFallback = c.model; c.model = "soho_eyes/soho.gltf"; }
-        if (c.name == "Parker Solar Probe") { c.modelFallback = c.model; c.model = "parker_eyes/PSP.gltf"; }
+        if (c.name == "Parker Solar Probe") {
+            c.modelFallback = c.model;
+            c.model = "parker_eyes/PSP.gltf";
+            c.modelPitchDeg = 90.f; // the Eyes model's heat shield faces -Z: turn it to +Y, the sunward axis
+            c.sizeMeters = 10.2f;   // its extent (in metres) is the span between the electric antenna tips
+        }
     }
 }
 
@@ -343,20 +353,23 @@ void CraftCatalog::update(const SolarSystem& solar, double jd) {
             break;
         }
         case CraftPlacement::HeliocentricEllipse: {
-            const double M = std::fmod(glm::two_pi<double>() * days / c.periodDays, glm::two_pi<double>());
+            // Kepler's equation from the time of perihelion, then the orbit rotated into the J2000 ecliptic
+            // by the argument of perihelion, inclination and node.
+            const double M = std::fmod(glm::two_pi<double>() * (jd - c.perihelionJd) / c.periodDays, glm::two_pi<double>());
             double E = M;
-            for (int i = 0; i < 10; ++i) E -= (E - c.ecc * std::sin(E) - M) / (1.0 - c.ecc * std::cos(E));
+            for (int i = 0; i < 12; ++i) E -= (E - c.ecc * std::sin(E) - M) / (1.0 - c.ecc * std::cos(E));
             const double x = c.aAu * (std::cos(E) - c.ecc), y = c.aAu * std::sqrt(1 - c.ecc * c.ecc) * std::sin(E);
-            const double inc = glm::radians(c.inclinationDeg);
-            glm::dvec3 ecl(x, y * std::cos(inc), y * std::sin(inc));
-            // Ecliptic -> engine via the solar system's frame helper (approximate: use Earth's orbit plane).
-            const glm::dvec3 earth = solar.body(solar.find("Earth")).position - solar.sunPosition();
-            glm::dvec3 ex = glm::normalize(earth);
-            glm::dvec3 ez = glm::normalize(glm::cross(ex, glm::dvec3(0, 1, 0)));
-            glm::dvec3 ey = glm::cross(ez, ex);
-            glm::dvec3 world = ex * ecl.x + ey * ecl.y + ez * ecl.z;
+            const double w = glm::radians(c.periDeg), O = glm::radians(c.nodeDeg), inc = glm::radians(c.inclinationDeg);
+            const double xw = x * std::cos(w) - y * std::sin(w), yw = x * std::sin(w) + y * std::cos(w);
+            const glm::dvec3 ecl(xw * std::cos(O) - yw * std::cos(inc) * std::sin(O),
+                                 xw * std::sin(O) + yw * std::cos(inc) * std::cos(O), yw * std::sin(inc));
+            const glm::dvec3 world = solar.eclipticToEngine() * ecl;
             c.position = solar.sunPosition() + world * (kKmPerAU * pcPerKm);
-            c.rotation = frameFromUpForward(glm::vec3(-glm::normalize(world)), glm::vec3(0, 1, 0)); // shield sunward
+            // Shield sunward; the model's forward held in the ecliptic plane (never parallel to the Sun line,
+            // which made the frame degenerate and the probe vanish).
+            const glm::dvec3 pole = solar.eclipticToEngine() * glm::dvec3(0.0, 0.0, 1.0);
+            const glm::dvec3 sunward = -glm::normalize(world);
+            c.rotation = frameFromUpForward(glm::vec3(sunward), glm::vec3(glm::normalize(glm::cross(pole, sunward))));
             break;
         }
         }
@@ -473,6 +486,25 @@ void CraftCatalog::viewpoint(const SolarSystem& solar, int index, double distanc
         outPos = c.position + dir * (size * distanceSizes * 1.8);
         const glm::dvec3 aim = viewAim(solar, index, outPos, glm::radians(90.f));
         outOrient = glm::quatLookAt(glm::normalize(glm::vec3(aim - outPos)), glm::vec3(up));
+        return;
+    }
+    if (sunBehind(index)) {
+        // Behind the probe, almost on the line from the Sun: the shield hides most of the disc, the Sun
+        // grazes its rim, and the corona and glare stand out around the silhouette.
+        // The shield is ~2.3 m across on a 3 m craft: offset the line of sight by about half its angular
+        // radius, so the disc stays hidden but sits off-centre behind the rim.
+        // Back along the Sun line until the 2.3 m shield just covers the disc (about 11 m at perihelion, where
+        // the Sun is 11.7 degrees across), then off the line far enough that a sliver of the disc (an eighth of
+        // its radius) clears the rim.
+        glm::dvec3 lift = glm::normalize(glm::cross(toSun, side));
+        const double sunDist = glm::length(solar.sunPosition() - c.position) * kKmPerParsec;
+        const double sunAng = std::asin(std::min(solar.body(0).radiusKm / std::max(sunDist, 1.0), 1.0));
+        const double shieldR = 1.15;                                                   // metres
+        const double back = std::clamp(shieldR / std::tan(sunAng * 1.02), 6.0, 60.0);  // metres
+        const double offset = std::max(std::atan(shieldR / back) - sunAng + 0.12 * sunAng, 0.0);
+        dir = glm::normalize(-toSun + glm::normalize(side * 0.9 + lift * 0.45) * std::tan(offset));
+        outPos = c.position + dir * (back / kMetersPerParsec);
+        outOrient = glm::quatLookAt(glm::normalize(glm::vec3(c.position - outPos)), glm::vec3(up));
         return;
     }
     switch (c.placement) {
@@ -598,6 +630,11 @@ double CraftCatalog::preferredSunElevationDeg(const std::string& bodyName) {
     if (bodyName == "Moon" || bodyName == "Mercury") return 13.0; // the Apollo landings came down at 5-15 deg
     if (bodyName == "Mars") return 30.0;
     return 35.0;
+}
+
+double CraftCatalog::lastPerihelionJulianDate(int index, double jd) const {
+    const Craft& c = m_crafts[index];
+    return c.perihelionJd + std::floor((jd - c.perihelionJd) / c.periodDays) * c.periodDays;
 }
 
 double CraftCatalog::daylightJulianDate(const SolarSystem& solarIn, int index, double jd) const {
@@ -729,6 +766,9 @@ glm::dvec3 CraftCatalog::skyUp(const SolarSystem& solar, int index) const {
         glm::dvec3 away = c.position - solar.body(c.parent).position;
         if (glm::length(away) > 0.0) return glm::normalize(away);
     }
+    // A Sun-facing probe's model up is the Sun line, which is where the camera looks from behind it: take
+    // ecliptic north instead, so the tour's locked up vector is never parallel to the view.
+    if (sunBehind(index)) return glm::normalize(solar.eclipticToEngine() * glm::dvec3(0.0, 0.0, 1.0));
     return glm::normalize(glm::dvec3(c.rotation * glm::vec3(0, 1, 0)));
 }
 

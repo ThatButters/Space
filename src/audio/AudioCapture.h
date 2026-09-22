@@ -30,7 +30,7 @@ private:
     std::thread m_thread;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stop{false};
-    unsigned m_sampleRate = 48000;
+    std::atomic<unsigned> m_sampleRate{48000}; // written by the capture thread, read by the analyser
     std::string m_deviceName;
 
     mutable std::mutex m_mutex;

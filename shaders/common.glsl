@@ -11,6 +11,9 @@ float hash13(vec3 p) {
     return fract((p.x + p.y) * p.z);
 }
 
+// exp(-x^2) without pow(), which is undefined (NaN on some drivers) for a negative base.
+float gauss(float x) { return exp(-x * x); }
+
 vec3 hash33(vec3 p) {
     p = fract(p * vec3(0.1031, 0.1030, 0.0973));
     p += dot(p, p.yxz + 33.33);

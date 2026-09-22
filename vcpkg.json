@@ -1,7 +1,7 @@
 {
   "name": "space",
   "version-string": "0.1.0",
-  "description": "GPU galaxy/universe explorer built on Vulkan 1.3 for RTX 50-series hardware",
+  "description": "Photoreal solar-system explorer on a custom Vulkan 1.3 engine",
   "dependencies": [
     "glfw3",
     "glm",

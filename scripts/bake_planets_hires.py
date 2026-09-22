@@ -116,25 +116,28 @@ BODIES = {
 
 
 def http_size(url):
-    with urllib.request.urlopen(urllib.request.Request(url, method="HEAD")) as r:
-        return int(r.headers["Content-Length"])
+    """Content-Length from a HEAD request, or None when the server does not send one."""
+    with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=60) as r:
+        n = r.headers.get("Content-Length")
+        return int(n) if n else None
 
 
 def fetch(out, url):
-    """Download url into out/ unless a file of the size reported by a HEAD request is already there."""
+    """Download url into out/ unless it is already there. Downloads land as .part and are renamed only
+    once complete, so a file under its final name is whole (and re-baking needs no network)."""
     path = os.path.join(out, url.rsplit("/", 1)[1])
-    size = http_size(url)
-    if os.path.exists(path) and os.path.getsize(path) == size:
+    if os.path.exists(path):
         return path
-    print(f"downloading {url} ({size / 1e6:.0f} MB)")
+    size = http_size(url)
+    print(f"downloading {url}" + (f" ({size / 1e6:.0f} MB)" if size else ""))
     tmp = path + ".part"
-    with urllib.request.urlopen(url) as r, open(tmp, "wb") as f:
+    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
         while True:
             chunk = r.read(8 << 20)
             if not chunk:
                 break
             f.write(chunk)
-    if os.path.getsize(tmp) != size:
+    if size is not None and os.path.getsize(tmp) != size:
         sys.exit(f"short download: {url}")
     os.replace(tmp, path)
     return path

@@ -14,6 +14,7 @@
 #include "gfx/GltfModel.h"
 #include "scene/FlagModel.h"
 #include <fstream>
+#include <sstream>
 
 #include <cctype>
 #include <windows.h>
@@ -126,6 +127,7 @@ App::App(int argc, char** argv) {
     }
     loadTle();
     loadLiveClouds();
+    loadLiveSun();
     startLiveFetch();
     if (m_tourStart >= 0) m_tour.start(m_solar, m_camera, (size_t)m_tourStart);
     else if (m_startTour) {
@@ -769,6 +771,7 @@ void App::drawOverlay(double dt) {
             auto it = blurbs.find(name);
             if (it != blurbs.end()) blurb = it->second;
             if (name == "Earth" && !m_liveCloudDate.empty()) credit = "clouds: NASA GIBS imagery of " + m_liveCloudDate;
+            if (name == "Sun" && !m_liveSunWhen.empty()) credit = "sunspots: NASA SDO/HMI, " + m_liveSunWhen;
         }
         if (!name.empty()) {
             const bool flight = !m_tour.visiting();
@@ -862,9 +865,9 @@ bool App::loadLiveClouds() {
     if (!std::filesystem::exists(png, ec)) return false;
     const auto stamp = std::filesystem::last_write_time(png, ec);
     if (stamp == m_cloudsStamp) return false;
+    m_cloudsStamp = stamp; // before decoding: a damaged file is tried once, not every poll
     gfx::DecodedImage img = gfx::decodeImage(png);
     if (!img.ok()) return false;
-    m_cloudsStamp = stamp;
     gfx::Texture tex;
     if (!tex.upload(m_ctx, img, false, "clouds today")) return false;
     Body& earth = m_solar.bodies()[m_solar.find("Earth")];
@@ -877,22 +880,93 @@ bool App::loadLiveClouds() {
     return true;
 }
 
-void App::startLiveFetch() {
-    // Fresh enough? Clouds dated today or yesterday (UTC) and elements under 12 hours old skip the fetch.
-    const auto dir = assetDirectory();
+bool App::loadLiveSun() {
+    const auto dir = assetDirectory() / "textures";
+    const auto png = dir / "sun_today.png";
     std::error_code ec;
-    bool stale = true;
-    const auto tlePath = dir / "models" / "tle.txt";
-    const auto cloudsTxt = dir / "textures" / "earth_hires" / "clouds_today.txt";
-    if (std::filesystem::exists(tlePath, ec) && std::filesystem::exists(cloudsTxt, ec)) {
-        const auto now = std::filesystem::file_time_type::clock::now();
-        const auto tleAge = now - std::filesystem::last_write_time(tlePath, ec);
-        const auto cloudAge = now - std::filesystem::last_write_time(cloudsTxt, ec);
-        stale = tleAge > std::chrono::hours(12) || cloudAge > std::chrono::hours(20);
+    if (!std::filesystem::exists(png, ec)) return false;
+    const auto stamp = std::filesystem::last_write_time(png, ec);
+    if (stamp == m_sunStamp) return false;
+    m_sunStamp = stamp;
+    std::string when; // 2026-09-22T19:00:00Z
+    std::ifstream(dir / "sun_today.txt") >> when;
+    int Y = 0, Mo = 0, D = 0, h = 0, mi = 0, s = 0;
+    char sep;
+    std::istringstream parse(when);
+    if (!(parse >> Y >> sep >> Mo >> sep >> D >> sep >> h >> sep >> mi >> sep >> s)) return false;
+    gfx::DecodedImage disc = gfx::decodeImage(png);
+    if (!disc.ok()) return false;
+    const auto day = std::chrono::sys_days{std::chrono::year{Y} / Mo / D};
+    const double jdObs = day.time_since_epoch().count() + 2440587.5 + (h + (mi + s / 60.0) / 60.0) / 24.0;
+
+    // Where the Sun was turned, and where Earth (SDO) was, when the picture was taken.
+    SolarSystem then = m_solar;
+    then.update(jdObs);
+    const Body& sun = then.body(then.find("Sun"));
+    const glm::dvec3 E = glm::normalize(then.body(then.find("Earth")).position - sun.position);
+    // The image has solar north up and west (the side the spots rotate toward) on the right.
+    const glm::dvec3 pole = sun.rotationD * glm::dvec3(0.0, 1.0, 0.0);
+    const glm::dvec3 north = glm::normalize(pole - E * glm::dot(pole, E));
+    const glm::dvec3 right = glm::cross(north, E);
+
+    // Into the Sun's own equirect frame (planet.frag sphereUv): the spots then turn with the globe.
+    const int W = 2048, H = 1024, n = disc.width;
+    auto at = [&](int x, int y) { return (float)disc.rgba[((size_t)std::clamp(y, 0, n - 1) * n + std::clamp(x, 0, n - 1)) * 4]; };
+    gfx::DecodedImage map;
+    map.width = W;
+    map.height = H;
+    map.srgb = false;
+    map.rgba.assign((size_t)W * H * 4, 255);
+    for (int y = 0; y < H; ++y) {
+        const double theta = glm::pi<double>() * (y + 0.5) / H;
+        for (int x = 0; x < W; ++x) {
+            const double phi = (0.5 - (x + 0.5) / W) * glm::two_pi<double>(); // atan(z, x)
+            const glm::dvec3 local{std::sin(theta) * std::cos(phi), std::cos(theta), std::sin(theta) * std::sin(phi)};
+            const glm::dvec3 w = sun.rotationD * local;
+            const double mu = glm::dot(w, E);
+            float v = 200.f; // the far side: quiet photosphere
+            if (mu > 0.2) {
+                // Bilinear from the disc; faded out toward the limb, where the image is foreshortened.
+                const double px = (glm::dot(w, right) * 0.5 + 0.5) * n - 0.5, py = (0.5 - glm::dot(w, north) * 0.5) * n - 0.5;
+                const int ix = (int)std::floor(px), iy = (int)std::floor(py);
+                const float fx = (float)(px - ix), fy = (float)(py - iy);
+                const float s0 = at(ix, iy) + (at(ix + 1, iy) - at(ix, iy)) * fx;
+                const float s1 = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * fx;
+                const float k = (float)glm::smoothstep(0.2, 0.35, mu);
+                v = 200.f + (s0 + (s1 - s0) * fy - 200.f) * k;
+            }
+            const uint8_t b = (uint8_t)std::clamp(v + 0.5f, 0.f, 255.f);
+            uint8_t* o = &map.rgba[((size_t)y * W + x) * 4];
+            o[0] = o[1] = o[2] = b;
+        }
     }
-    if (!stale) return;
+    gfx::Texture tex;
+    if (!tex.upload(m_ctx, map, false, "sun today")) return false;
+    Body& live = m_solar.bodies()[m_solar.find("Sun")];
+    if (live.texDayIndex < 0) live.texDayIndex = m_renderer.addTexture(std::move(tex));
+    else m_renderer.replaceTexture(live.texDayIndex, std::move(tex));
+    m_liveSunWhen = formatJulianDate(jdObs, true);
+    LOG_INFO("Live Sun: SDO/HMI continuum of {}", when);
+    return true;
+}
+
+void App::startLiveFetch() {
+    // Only what is stale: orbits over 12 hours old, clouds over 20 (a day's mosaic), the Sun over 6.
+    const auto dir = assetDirectory();
+    const auto now = std::filesystem::file_time_type::clock::now();
+    auto stale = [&](const std::filesystem::path& p, std::chrono::hours maxAge) {
+        std::error_code ec;
+        const auto t = std::filesystem::last_write_time(p, ec);
+        return ec || now - t > maxAge;
+    };
+    std::string parts;
+    auto want = [&](const char* part) { parts += (parts.empty() ? "" : ",") + std::string(part); };
+    if (stale(dir / "models" / "tle.txt", std::chrono::hours(12))) want("tle");
+    if (stale(dir / "textures" / "sun_today.txt", std::chrono::hours(6))) want("sun");
+    if (stale(dir / "textures" / "earth_hires" / "clouds_today.txt", std::chrono::hours(20))) want("clouds");
+    if (parts.empty()) return;
     const std::string script = (dir.parent_path() / "scripts" / "fetch_today.py").string();
-    std::string cmd = "python \"" + script + "\"";
+    std::string cmd = "python \"" + script + "\" --only " + parts;
     STARTUPINFOA si{};
     si.cb = sizeof si;
     PROCESS_INFORMATION pi{};
@@ -901,7 +975,7 @@ void App::startLiveFetch() {
     if (CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, dir.parent_path().string().c_str(), &si, &pi)) {
         CloseHandle(pi.hThread);
         m_liveProcess = pi.hProcess;
-        LOG_INFO("Live data: fetching today's clouds and orbits in the background");
+        LOG_INFO("Live data: fetching {} in the background", parts);
     } else {
         LOG_WARN("Live data: could not start python (run scripts/fetch_today.py by hand)");
     }
@@ -921,6 +995,7 @@ void App::pollLiveData() {
     }
     loadTle();
     loadLiveClouds();
+    loadLiveSun();
 }
 
 void App::goToSurface(int index, double latDeg, double lonDeg, double altKm) {
@@ -1368,7 +1443,9 @@ void App::updateCamera(double dt) {
     }
 
     if (float s = m_input.scrollDelta(); s != 0.f) m_camera.speed *= std::pow(1.4, (double)s);
-    m_camera.speed = std::clamp(m_camera.speed, 1e-15, 1e12);
+    // Down to a millimetre a second (the tour leaves you beside a 3 m probe at 0.9 m/s); 1e-15 pc/s was 31 m/s.
+    m_camera.speed = std::clamp(m_camera.speed, 1e-6 / kKmPerParsec, 1e12);
+    if (float fov; m_tour.takeLensRestore(fov)) m_camera.fovY = fov;
 
     if (touring) return; // the autopilot has the stick: flight keys wait until the tour is off (T)
 
@@ -1402,7 +1479,7 @@ void App::updateAudio(double dt) {
     }
     m_beatSoft = 0.f; // no per-beat screen effects
 
-    const bool active = m_audioReact > 0.f && !m_analyzer.silent();
+    const bool active = m_audioReact > 0.f && m_audio.running() && !m_analyzer.silent();
     const float k = active ? m_audioReact : 0.f;
     const auto& bands = m_analyzer.bands();
     for (int i = 0; i < 32; ++i) m_frameScene.audioBands[i] = active ? bands[i] : 0.f;

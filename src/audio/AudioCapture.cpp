@@ -28,6 +28,7 @@ AudioCapture::~AudioCapture() { stop(); }
 bool AudioCapture::start() {
 #ifdef _WIN32
     if (m_running) return true;
+    if (m_thread.joinable()) m_thread.join(); // an earlier thread that failed or lost its device
     m_ring.assign(kRingSamples, 0.f);
     m_stop = false;
     m_thread = std::thread([this] { threadMain(); });
@@ -85,6 +86,8 @@ void AudioCapture::threadMain() {
         if (enumerator) enumerator->Release();
         if (comOwned) CoUninitialize();
         m_running = false;
+        std::lock_guard<std::mutex> lock(m_mutex); // no frozen spectrum from the last packets heard
+        std::fill(m_ring.begin(), m_ring.end(), 0.f);
     };
 
     hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
@@ -139,17 +142,27 @@ void AudioCapture::threadMain() {
     if (FAILED(hr)) { cleanup(); return; }
 
     m_running = true;
-    LOG_INFO("Audio: loopback capture on '{}' ({} Hz, {} ch, {})", m_deviceName, m_sampleRate, channels,
+    LOG_INFO("Audio: loopback capture on '{}' ({} Hz, {} ch, {})", m_deviceName, m_sampleRate.load(), channels,
              isFloat ? "float" : "pcm16");
 
     std::vector<float> mono;
+    // When nothing is playing, loopback often delivers no packets at all rather than silent ones: feed the
+    // ring silence for the gap, or the analyser would hold the last notes it heard for ever.
+    ULONGLONG lastPacket = GetTickCount64();
     while (!m_stop) {
         UINT32 packet = 0;
         if (FAILED(capture->GetNextPacketSize(&packet))) break;
         if (packet == 0) {
+            const ULONGLONG now = GetTickCount64();
+            if (now - lastPacket > 50) {
+                mono.assign((size_t)((now - lastPacket) * m_sampleRate / 1000), 0.f);
+                push(mono.data(), std::min(mono.size(), kRingSamples));
+                lastPacket = now;
+            }
             Sleep(4);
             continue;
         }
+        lastPacket = GetTickCount64();
         BYTE* data = nullptr;
         UINT32 frames = 0;
         DWORD flags = 0;
