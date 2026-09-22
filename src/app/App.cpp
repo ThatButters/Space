@@ -1041,6 +1041,7 @@ int App::run() {
 
         if (m_input.keyPressed(GLFW_KEY_ESCAPE)) glfwSetWindowShouldClose(m_window->handle(), GLFW_TRUE);
         if (m_input.keyPressed(GLFW_KEY_F1)) m_showUi = !m_showUi;
+        if (m_input.keyPressed(GLFW_KEY_F9)) m_silly.toggle();
         if (m_input.keyPressed(GLFW_KEY_T) && m_useGaia && !ImGui::GetIO().WantTextInput) {
             if (m_tour.active()) m_tour.stop("T key");
             else m_tour.start(m_solar, m_camera);
@@ -1060,6 +1061,11 @@ int App::run() {
         updateScene(dt);
         m_cameraVelocity = (inputDelta + m_tourDelta) / std::max(dt, 1e-4);
         m_frameScene.cameraOwnDelta = glm::vec3(inputDelta + m_tourDelta);
+        {
+            const bool keys = !ImGui::GetIO().WantTextInput;
+            m_silly.update(dt, keys && m_input.keyPressed(GLFW_KEY_F), keys && m_input.keyDown(GLFW_KEY_P), m_tour,
+                           m_solar, m_crafts, m_frameScene, m_renderCamera, m_camera.position, w, h);
+        }
         updateConstellations(dt);
 
         ++m_frameCounter;
@@ -1074,6 +1080,7 @@ int App::run() {
         if (m_showUi) drawUi(dt);
         drawLabels();
         if (m_showOverlay) drawOverlay(dt);
+        m_silly.draw(ImGui::GetForegroundDrawList(), w, h);
         m_renderer.endFrame(m_renderCamera, now, m_effective, m_frameScene);
     }
     return 0;
@@ -1455,7 +1462,7 @@ void App::updateCamera(double dt) {
     if (m_input.keyDown(GLFW_KEY_A)) move.x -= 1.0;
     if (m_input.keyDown(GLFW_KEY_D)) move.x += 1.0;
     if (m_input.keyDown(GLFW_KEY_R) || m_input.keyDown(GLFW_KEY_SPACE)) move.y += 1.0;
-    if (m_input.keyDown(GLFW_KEY_F) || m_input.keyDown(GLFW_KEY_LEFT_CONTROL)) move.y -= 1.0;
+    if ((m_input.keyDown(GLFW_KEY_F) && !m_silly.enabled()) || m_input.keyDown(GLFW_KEY_LEFT_CONTROL)) move.y -= 1.0;
     if (glm::length(move) > 0.0) {
         double boost = m_input.keyDown(GLFW_KEY_LEFT_SHIFT) ? 5.0 : 1.0;
         m_camera.translateLocal(glm::normalize(move) * m_camera.speed * boost * dt);
@@ -1479,7 +1486,8 @@ void App::updateAudio(double dt) {
     }
     m_beatSoft = 0.f; // no per-beat screen effects
 
-    const bool active = m_audioReact > 0.f && m_audio.running() && !m_analyzer.silent();
+    // Loopback capture hears our own farts: keep them from driving the music effects.
+    const bool active = m_audioReact > 0.f && m_audio.running() && !m_analyzer.silent() && !m_silly.enabled();
     const float k = active ? m_audioReact : 0.f;
     const auto& bands = m_analyzer.bands();
     for (int i = 0; i < 32; ++i) m_frameScene.audioBands[i] = active ? bands[i] : 0.f;

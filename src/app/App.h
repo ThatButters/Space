@@ -12,6 +12,7 @@
 #include "scene/Volumes.h"
 #include "audio/Analyzer.h"
 #include "audio/AudioCapture.h"
+#include "app/SillyMode.h"
 
 #include <chrono>
 #include <filesystem>
@@ -110,6 +111,7 @@ private:
 
     audio::AudioCapture m_audio;
     audio::Analyzer m_analyzer;
+    SillyMode m_silly;
     float m_audioReact = 1.f; // 0 = off
     float m_waveStrength = 0.f; // rare slow tide, off by default
     float m_waveCooldown = 0.f;
