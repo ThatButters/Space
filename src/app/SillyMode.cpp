@@ -4,6 +4,7 @@
 #include "scene/Camera.h"
 #include "scene/Craft.h"
 #include "scene/SolarSystem.h"
+#include "scene/StarCatalog.h"
 #include "scene/Tour.h"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -12,6 +13,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <sstream>
+#include <string>
+
+#define STB_VORBIS_HEADER_ONLY
+#include <stb_vorbis.c>
 
 namespace space {
 
@@ -126,6 +136,56 @@ SillyMode::Place placeFor(const std::string& n) {
     return P::Other;
 }
 
+// A recorded take: decoded to mono, trimmed to the sound (the files carry up to two seconds of room tone),
+// resampled to the output rate and levelled like the synthesised clips. Null if the file will not decode.
+Clip loadTake(const std::filesystem::path& path, float rate) {
+    int channels = 0, fileRate = 0;
+    short* pcm = nullptr;
+    const int frames = stb_vorbis_decode_filename(path.string().c_str(), &channels, &fileRate, &pcm);
+    if (frames <= 0 || !pcm) {
+        LOG_WARN("Silly mode: cannot decode {}", path.string());
+        return nullptr;
+    }
+    std::vector<float> mono((size_t)frames);
+    for (int i = 0; i < frames; ++i) {
+        float s = 0.f;
+        for (int c = 0; c < channels; ++c) s += pcm[(size_t)i * channels + c];
+        mono[i] = s / (32768.f * (float)channels);
+    }
+    std::free(pcm);
+
+    // Trim to where the sound is above 3% of its peak (on a 10 ms envelope), keeping 20 ms either side.
+    const size_t win = (size_t)(fileRate * 0.01f);
+    float peak = 1e-6f;
+    for (float v : mono) peak = std::max(peak, std::abs(v));
+    size_t first = mono.size(), last = 0;
+    float env = 0.f;
+    for (size_t i = 0; i < mono.size(); ++i) {
+        env += (std::abs(mono[i]) - env) / (float)win;
+        if (env > peak * 0.03f) {
+            first = std::min(first, i > win ? i - win : 0);
+            last = i;
+        }
+    }
+    if (first >= last) return nullptr;
+    const size_t pad = (size_t)(fileRate * 0.02f);
+    first = first > pad ? first - pad : 0;
+    last = std::min(mono.size() - 1, last + pad);
+
+    // Resample (linear is plenty for a fart) with 5 ms fades so the cut ends never click.
+    const double step = (double)fileRate / rate;
+    const size_t n = (size_t)((double)(last - first) / step);
+    std::vector<float> out(n);
+    const float fade = rate * 0.005f;
+    for (size_t i = 0; i < n; ++i) {
+        const double x = (double)first + (double)i * step;
+        const size_t k = std::min((size_t)x, last - 1);
+        const float f = (float)(x - (double)k);
+        out[i] = (mono[k] + (mono[k + 1] - mono[k]) * f) * std::min({1.f, (float)i / fade, (float)(n - 1 - i) / fade});
+    }
+    return Synth::finish(std::move(out));
+}
+
 glm::vec2 riverPoint(float x) { return {x, 0.08f + 0.2f * std::sin(x * 4.5f + 0.6f)}; }
 
 } // namespace
@@ -229,6 +289,7 @@ void SillyMode::toggle() {
                 return t;
             }(), 0.5f);
             c.tch = Synth::finish(s.noiseBurst(0.06f, 3000.f, 12000.f, 40.f), 0.4f);
+            loadRecordings();
         }
     }
     if (!m_on) {
@@ -238,7 +299,47 @@ void SillyMode::toggle() {
     }
 }
 
-void SillyMode::sfx(const Clip& clip, float gain, float pitch) { m_sound.play(clip, gain, pitch); }
+void SillyMode::sfx(const Clip& clip, float gain, float pitch) {
+    for (const Takes& t : m_takes)
+        if (t.synth == clip && !t.takes.empty()) {
+            m_sound.play(t.takes[m_rng() % t.takes.size()], gain, pitch);
+            return;
+        }
+    m_sound.play(clip, gain, pitch);
+}
+
+void SillyMode::loadRecordings() {
+    m_takes.clear();
+    const std::filesystem::path dir = assetDirectory() / "sounds";
+    std::ifstream list(dir / "farts.txt");
+    if (!list) return;
+    const auto& c = m_clips;
+    const std::pair<const char*, Clip> kinds[] = {
+        {"short", c.fartShort}, {"medium", c.fartMedium}, {"long", c.fartLong},       {"deep", c.fartDeep},
+        {"epic", c.fartEpic},   {"squeaky", c.fartSqueaky}, {"bouncy", c.fartBouncy}, {"crackly", c.fartCrackly}};
+    for (const auto& [name, synth] : kinds) m_takes.push_back({synth, {}});
+    std::map<std::string, Clip> decoded; // a file cast as several kinds is decoded once
+    std::string line;
+    int count = 0;
+    while (std::getline(list, line)) {
+        std::istringstream in(line);
+        std::string kind, file;
+        if (!(in >> kind >> file) || kind[0] == '#') continue;
+        size_t k = 0;
+        while (k < std::size(kinds) && kind != kinds[k].first) ++k;
+        if (k == std::size(kinds)) {
+            LOG_WARN("farts.txt: unknown kind '{}'", kind);
+            continue;
+        }
+        auto it = decoded.find(file);
+        if (it == decoded.end()) it = decoded.emplace(file, loadTake(dir / file, (float)m_sound.sampleRate())).first;
+        if (it->second) {
+            m_takes[k].takes.push_back(it->second);
+            ++count;
+        }
+    }
+    LOG_INFO("Silly mode: {} recorded farts from {} files", count, decoded.size());
+}
 
 void SillyMode::reset() {
     m_fartT = m_jiggleT = m_wiggleT = m_ringT = m_shakeT = 99.f;

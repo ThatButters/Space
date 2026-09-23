@@ -64,6 +64,14 @@ private:
             fartDeep, bloops, hiss, sizzle, giggle, slurp, squeak, whistleUp, boing, chirps, tada, thud, whoosh,
             rumble, splash, tink, tch, sparkle;
     } m_clips;
+    // Real recordings (assets/sounds, from scripts/fetch_sounds.py) that play in place of a synthesised
+    // fart: one picked at random each time.
+    struct Takes {
+        audio::SoundPlayer::Clip synth;
+        std::vector<audio::SoundPlayer::Clip> takes;
+    };
+    std::vector<Takes> m_takes;
+    void loadRecordings();
 
     std::mt19937 m_rng{20260917};
     int m_stopKey = -1000;
