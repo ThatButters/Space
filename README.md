@@ -30,6 +30,8 @@ middleware beyond the NVIDIA DLSS SDK.
 | *Jupiter* | *Saturn, rings translucent and backlit* |
 | ![Flying through Saturn's rings](docs/screenshots/rings.jpg) | ![Earth](docs/screenshots/earth.jpg) |
 | *Through the ring plane* | *Earth, water shaded as water, cloud tops volumetric* |
+| ![The Sun with the day's sunspots from NASA SDO](docs/screenshots/sun.jpg) | ![Parker Solar Probe at perihelion, heat shield to the Sun](docs/screenshots/parker.jpg) |
+| *The Sun, sunspots from NASA SDO/HMI, 23 September 2026* | *Parker Solar Probe at perihelion, 6.9 million km from the Sun, 5 September 2026* |
 
 ## What it does
 
