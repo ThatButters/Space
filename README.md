@@ -119,6 +119,7 @@ shadow map (crafts)  ->  HDR scene at DLSS internal size:
 | Planets and moons | USGS Astrogeology mosaics: Mars (Viking, MOLA), Mercury (MESSENGER), Venus (Magellan SAR), the Galilean moons, Titan, Rhea, Triton, Phobos, Deimos | public domain |
 | 8K fallback maps | Solar System Scope (not the Sun: its painted map is not used) | CC BY 4.0 |
 | Spacecraft | NASA 3D Resources, NASA Eyes on the Solar System | public domain |
+| Silly-mode farts | [Jixolros](https://freesound.org/people/Jixolros/)'s "realpoot" recordings on Freesound | CC0 |
 | DLSS | NVIDIA DLSS SDK | NVIDIA licence, drop-in only |
 
 Nothing above is in the repository (multi-GB); the scripts fetch and bake it.
@@ -153,6 +154,7 @@ curl -LO https://raw.githubusercontent.com/astronexus/ATHYG-Database/main/data/a
 curl -LO https://raw.githubusercontent.com/astronexus/ATHYG-Database/main/data/athyg_v32-2.csv.gz
 python scripts\convert_athyg.py athyg_v32-1.csv.gz athyg_v32-2.csv.gz
 python scripts\fetch_constellations.py
+python scripts\fetch_sounds.py          recorded sounds for silly mode (F9)   (seconds)
 python scripts\bake_earth_hires.py      Blue Marble 16K tiles, ~3 GB VRAM     (~5 minutes)
 python scripts\bake_moon_hires.py       LRO colour + LOLA relief              (~5 minutes)
 python scripts\bake_planets_hires.py    USGS mosaics for Mars, Mercury, Venus, the moons (~8 GB of sources)
