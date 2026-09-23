@@ -79,7 +79,10 @@ vec2 atmoRaySphere(vec3 ro, vec3 rd, float radius) {
     float b = dot(ro, rd);
     vec3 closest = ro - b * rd;
     float disc = radius * radius - dot(closest, closest);
-    if (disc < 0.0) return vec2(1.0, -1.0);
+    // A miss is (-1, -1): both entries behind the ray, so "x > 0" (hits ahead) and "y > 0" (sphere ahead)
+    // both read false. (1, -1) made callers testing x > 0 see a ground hit 1 km out on every miss: the
+    // limb and sky were discarded, and the multiple-scattering LUT stopped every upward ray after 1 km.
+    if (disc < 0.0) return vec2(-1.0, -1.0);
     float s = sqrt(disc);
     return vec2(-b - s, -b + s);
 }

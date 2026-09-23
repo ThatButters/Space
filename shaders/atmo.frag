@@ -162,12 +162,12 @@ void main() {
         if (!groundHit) L += T * S * (vec3(1.0) - stepT) / max(ext, vec3(1e-12));
 
         if (type == 2 && pc.params.w > 0.0) {
-            // Aurora and airglow are self-emissive: not scaled by sunlight, brighter on the night side.
+            // Aurora and airglow are self-emissive: not scaled by sunlight. The aurora shows only on the night side.
             vec3 pl = rotateInv(b.rotation, p / R);
             vec3 sl = normalize(rotateInv(b.rotation, sunDir));
             float hKm = pr - R;
             float dsR = dt / 6371.0;
-            float night = lit < 0.5 ? 1.0 : 0.25;
+            float night = 1.0 - lit; // invisible against the sunlit dayside; fades out across the terminator
             auroraLight += T * aurora(pl, sl, hKm / 6371.0, pc.params.x, pc.params.w) * dsR * night;
             // Airglow: the faint green oxygen layer near 90 km that rims the night limb in photos from orbit.
             float glow = gauss((hKm - 92.0) / 16.0) * (lit < 0.5 ? 1.0 : 0.15);
