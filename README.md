@@ -223,3 +223,8 @@ was designed for it).
 Built by Charles Beeman with Claude as a pair programmer. Imagery and models are the work of NASA,
 USGS, JPL, LROC/ASU, HiRISE/UA, ESA Gaia, and the AT-HYG and Stellarium communities — see the data
 table for each source and licence.
+
+## Licence
+
+The code and shaders are MIT (see `LICENSE`). `assets/constellations.txt` is derived from Stellarium's
+modern sky culture and stays CC BY-SA 4.0. The fetched data keeps the licences in the data table above.

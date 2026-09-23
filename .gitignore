@@ -11,3 +11,4 @@ assets/gaia/
 imgui.ini
 assets/textures/
 assets/models/
+__pycache__/
